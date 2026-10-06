@@ -1,0 +1,10 @@
+/build/
+/.xmake/
+/install/
+/compile_commands.json
+/.cache/clangd/
+*.user
+*.user.*
+.DS_Store
+.idea/
+.vscode/

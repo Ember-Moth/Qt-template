@@ -1,0 +1,65 @@
+name: Modules Desktop CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: C++${{ matrix.standard }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, windows-2022, macos-26]
+        standard: [23, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.1.1'
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install LLVM on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm
+          echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          cache: true
+          setup-python: false
+      - name: Configure macOS LLVM/libc++
+        if: runner.os == 'macOS'
+        run: xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --cxxstd=${{ matrix.standard }}
+        env:
+          QT_ROOT: ${{ env.QT_ROOT_DIR }}
+      - name: Configure Linux GCC/libstdc++
+        if: runner.os == 'Linux'
+        run: xmake f -y -m debug --toolchain=gcc --cxx=g++-15 --qt="$QT_ROOT" --cxxstd=${{ matrix.standard }}
+        env:
+          QT_ROOT: ${{ env.QT_ROOT_DIR }}
+      - name: Configure Windows MSVC
+        if: runner.os == 'Windows'
+        run: xmake f -y -m debug --toolchain=msvc --qt="$env:QT_ROOT" --cxxstd=${{ matrix.standard }}
+        env:
+          QT_ROOT: ${{ env.QT_ROOT_DIR }}
+      - name: Build
+        run: xmake build -j 2
+      - name: Test
+        run: xmake test
+      - name: Lint QML
+        run: xmake lint

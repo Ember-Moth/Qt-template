@@ -1,0 +1,17 @@
+{
+  "file_types": {
+    "C++": ["cppm", "ixx"]
+  },
+  "languages": {
+    "C++": {
+      "language_servers": ["clangd"]
+    }
+  },
+  "lsp": {
+    "clangd": {
+      "binary": {
+        "arguments": ["--experimental-modules-support", "--background-index"]
+      }
+    }
+  }
+}

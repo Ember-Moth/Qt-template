@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: .
+  # Let clangd build one coherent set of module BMIs for its own AST.
+  Remove: [-fmodule-file=*]
