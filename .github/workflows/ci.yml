@@ -11,28 +11,29 @@ permissions:
 env:
   LLVM_VERSION: '23.1.3'
   QT_VERSION: '6.12.0'
+  # cmake/ImportStd.cmake enables `import std` with a gate UUID that only matches CMake 4.4.x.
+  CMAKE_VERSION: '4.4.4'
 
 jobs:
   build:
-    name: C++${{ matrix.standard }} / ${{ matrix.os }}
+    name: ${{ matrix.preset }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, windows-2025-vs2026, macos-26]
-        standard: [23, 26]
+        preset: [debug, debug-cxx26]
+        include:
+          # The Qt-free layers build and test on their own.
+          - os: ubuntu-26.04
+            preset: core
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-      # Linux and macOS build xmake from source; the cache key follows its version.
-      - name: Install xmake
-        uses: xmake-io/github-action-setup-xmake@v1
-        with:
-          xmake-version: '3.1.1'
-          actions-cache-folder: .xmake-tool
-          actions-cache-key: ${{ matrix.os }}
+      - name: Install CMake and Ninja
+        run: python -m pip install "cmake==${{ env.CMAKE_VERSION }}" ninja
       # Clang everywhere, with the C++ library of each platform's Qt SDK.
       # Clang 21 from the Ubuntu archive rejects libstdc++'s std module mixed with headers.
       - name: Install LLVM and Qt runtime dependencies on Linux
@@ -70,10 +71,14 @@ jobs:
         run: |
           brew install llvm
           echo "LLVM_ROOT=$(brew --prefix llvm)" >> "$GITHUB_ENV"
-      - name: Show Clang
+      - name: Show tools
         shell: bash
-        run: '"$LLVM_ROOT/bin/clang" --version'
+        run: |
+          cmake --version | head -1
+          ninja --version
+          "$LLVM_ROOT/bin/clang" --version | head -1
       - name: Install Qt
+        if: matrix.preset != 'core'
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
@@ -82,13 +87,16 @@ jobs:
           # aqtinstall 3.3.0 cannot read the per-kit Windows repository layout of Qt 6.12.
           aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
       - name: Configure
-        run: xmake f -y -m debug --toolchain=llvm --sdk="${{ env.LLVM_ROOT }}" --qt="${{ env.QT_ROOT_DIR }}" --cxxstd=${{ matrix.standard }}
+        run: cmake --preset ${{ matrix.preset }}
+        env:
+          QT_ROOT: ${{ env.QT_ROOT_DIR }}
       - name: Build
-        run: xmake build -j 2
+        run: cmake --build --preset ${{ matrix.preset }}
       - name: Test
-        run: xmake test -v
+        run: ctest --preset ${{ matrix.preset }}
       - name: Lint QML
-        run: xmake lint
+        if: matrix.preset != 'core'
+        run: cmake --build --preset ${{ matrix.preset }} --target lint
       - name: Check clangd modules on macOS
         if: runner.os == 'macOS'
-        run: xmake check-clangd
+        run: cmake --build --preset ${{ matrix.preset }} --target check_clangd

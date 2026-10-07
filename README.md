@@ -6,76 +6,60 @@ Windows、macOS、Linux 的 Qt QML + MVVM 开发模板。默认统一使用 C++2
 
 - [项目开发约定](AGENTS.md)：后续修改必须遵循的规则。
 - [架构设计](docs/architecture.md)：模块边界、启动与退出流程、扩展方式。
-- [构建入口](xmake.lua)：目标、配置选项及源码自动发现。
+- [构建入口](CMakeLists.txt)：目标、选项及源码自动发现；[CMakePresets.json](CMakePresets.json) 定义配置预设。
 
 ## 构建与运行
 
-需要 xmake 3.1.1+、LLVM/Clang 23+ 以及 Qt 6.12+ 桌面 SDK。三个平台统一使用 Clang，标准库与该平台的 Qt SDK 一致：macOS 用 libc++，Linux 用 libstdc++，Windows 用 MSVC STL。编译器、标准库和 clangd 使用匹配版本。以下平台命令对应仓库的工具链配置；本机验证环境和远端 CI 状态见[验证](#验证)。
+需要 CMake 4.4.x、Ninja、LLVM/Clang 23+ 以及 Qt 6.12+ 桌面 SDK。三个平台统一使用 Clang，标准库与该平台的 Qt SDK 一致：macOS 用 libc++，Linux 用 libstdc++，Windows 用 MSVC STL。编译器、标准库和 clangd 使用匹配版本。本机验证环境和远端 CI 状态见[验证](#验证)。
 
-macOS 使用 LLVM/libc++：
+`import std` 在 CMake 4.4 中仍是实验功能：[cmake/ImportStd.cmake](cmake/ImportStd.cmake) 设置的开关 UUID 只对应 CMake 4.4.x，升级 CMake 时需同步更新。配置预设读取两个环境变量：`LLVM_ROOT` 指向 LLVM 安装目录，`QT_ROOT` 指向 Qt 桌面 SDK。
+
+macOS 使用 Homebrew 的 LLVM 与其 libc++：
 
 ```sh
 export LLVM_ROOT="$(brew --prefix llvm)"
 export QT_ROOT="$HOME/Qt/6.12.0/macos"
-export PATH="$LLVM_ROOT/bin:$PATH"
-xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
-xmake build qt_template
-xmake test
-xmake lint
-xmake run qt_template
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+cmake --build --preset debug --target lint
+open build/debug/qt_template.app
 ```
 
-Linux 使用 Clang 23 与系统 libstdc++ 15+（提供 `std` 模块源码）。Ubuntu 26.04 自带的 Clang 21 在同时包含 libstdc++ 头文件与 `import std;` 时报错，可从 [apt.llvm.org](https://apt.llvm.org) 安装 Clang 23。`LLVM_ROOT` 指向 LLVM 安装目录（如 `/usr/lib/llvm-23`），`QT_ROOT` 指向本机 SDK 目录：
+Linux 使用 Clang 23 与系统 libstdc++ 15+（提供 `std` 模块源码）。Ubuntu 26.04 自带的 Clang 21 在同时包含 libstdc++ 头文件与 `import std;` 时报错，可从 [apt.llvm.org](https://apt.llvm.org) 安装 Clang 23：
 
 ```sh
-xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
-xmake build qt_template
-xmake test
-xmake lint
-xmake run qt_template
+export LLVM_ROOT=/usr/lib/llvm-23
+export QT_ROOT="$HOME/Qt/6.12.0/gcc_64"
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+cmake --build --preset debug --target lint
+./build/debug/qt_template
 ```
 
-Windows 在 VS x64 开发者环境中使用 [LLVM 官方安装包](https://github.com/llvm/llvm-project/releases) 的 Clang 与 MSVC STL，Qt 使用 MSVC 套件（VS 2026 与 Qt 的 msvc2022_64 套件二进制兼容）：
+Windows 在 VS x64 开发者环境中使用 [LLVM 官方安装包](https://github.com/llvm/llvm-project/releases) 的 Clang 与 MSVC STL，Qt 使用 MSVC 套件（VS 2026 与 Qt 的 msvc2022_64 套件二进制兼容）。CMake 官方只支持 Clang 搭配 libc++ 或 libstdc++ 使用 `import std`，`cmake/ImportStd.cmake` 为 MSVC STL 的 `std.ixx` 生成 libc++ 格式的模块清单。运行应用前将 Qt 的 `bin` 目录加入 PATH：
 
 ```powershell
 $env:LLVM_ROOT = "C:/Program Files/LLVM"
 $env:QT_ROOT = "C:/Qt/6.12.0/msvc2022_64"
-xmake f -y -m debug --toolchain=llvm --sdk="$env:LLVM_ROOT" --qt="$env:QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
-xmake build qt_template
-xmake test
-xmake lint
-xmake run qt_template
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+cmake --build --preset debug --target lint
+$env:PATH = "$env:QT_ROOT/bin;$env:PATH"; .\build\debug\qt_template.exe
 ```
 
-切换配置时写出全部选项：`xmake f` 只要带选项就不沿用上次的配置，未写出的模式、工具链、SDK 与 Qt 会回到默认值（release 模式、不指定 LLVM SDK），`xmake clean -a` 也会删除配置。以下命令沿用上文的 `LLVM_ROOT` 与 `QT_ROOT`，Windows 改用 `$env:LLVM_ROOT` 与 `$env:QT_ROOT`。
+| 预设 | 内容 | 构建目录 |
+| --- | --- | --- |
+| `debug` | Debug、C++23，桌面应用与全部测试 | `build/debug` |
+| `release` | Release、C++23 | `build/release` |
+| `debug-cxx26` | Debug、C++26 | `build/debug-cxx26` |
+| `core` | Debug、C++23，只构建无 Qt 部分及其测试 | `build/core` |
 
-切换桌面 C++26：
+每个预设使用独立构建目录，配置保存在其 `CMakeCache.txt`，切换预设不影响其他预设。配置时加 `-DTEMPLATE_TESTS=OFF` 关闭测试目标。
 
-```sh
-xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=26 --builddir=build/xmake/cxx26
-xmake build qt_template
-xmake test
-xmake lint
-```
-
-单独构建和测试无 Qt 部分，包含业务与应用级协程入口：
-
-```sh
-xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=n --tests=y --cxxstd=23 --builddir=build/xmake/business
-xmake build template_core
-xmake test
-```
-
-恢复桌面 C++23：
-
-```sh
-xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
-xmake build qt_template
-```
-
-`--tests=n` 关闭测试目标；`xmake lint` 需要 `--gui=y`。本机配置保存在 `.xmake/`，各标准与模式使用独立构建目录，配置和构建按顺序执行。
-
-Asio 1.38.2 与 MMKV 2.4.2 的源码版本和 SHA-256 固定在 [xmake/dependencies.lua](xmake/dependencies.lua)，首次配置下载到 `build/_deps/`。MMKV 官方 C++ Core 由 xmake 直接编译，保留加密支持并内置 zlib；模板的存储 API 当前使用单进程、未加密实例。
+Asio 1.38.2 与 MMKV 2.4.2 的源码地址和 SHA-256 固定在 [cmake/Dependencies.cmake](cmake/Dependencies.cmake)，由 FetchContent 下载到构建目录的 `_deps/`。MMKV 官方 C++ Core 直接编译为 `template_mmkv`，保留加密支持并内置 zlib；模板的存储 API 当前使用单进程、未加密实例。
 
 ## 目录与模块
 
@@ -111,12 +95,12 @@ src/
 
 业务、ViewModel 和应用模块按模块建立子目录。`storage` 与 `runtime` 直接作为各自唯一后端的模块目录。接口、实现和可选分区放在同一目录，模块可以包含多个实现文件。
 
-xmake 自动发现既有分层下的 `.cppm`、`.cpp`，Qt 层同时发现 `.h`，QML 资源自动收集，并由 qmlcachegen 预先编译为 C++ 随 `template_gui` 链接，运行时不再解析 QML 源码。模块的逻辑名称由 `export module` 决定。新增文件不需要逐个登记；额外库依赖仍需显式声明。QML 类型和依赖装配按[扩展步骤](docs/architecture.md#扩展业务与-viewmodel)更新。
+CMake 用 `file(GLOB_RECURSE … CONFIGURE_DEPENDS)` 按分层发现 `.cppm`（作为模块文件集）与 `.cpp`，Qt 层同时收集 `.h` 交给 AUTOMOC；新增文件在下次构建时自动重新配置。`qt_add_qml_module` 把 `src/ui` 的 QML 收集为 `Template.Ui` 模块，生成类型注册、qmldir 与 qmllint 目标，并由 qmlcachegen 预先编译为 C++，运行时不再解析 QML 源码。`Template.Ui` 构建为静态插件，应用与 QML 测试用 `Q_IMPORT_QML_PLUGIN(Template_UiPlugin)` 导入。模块的逻辑名称由 `export module` 决定。新增文件不需要逐个登记；额外库依赖仍需显式声明。QML 类型和依赖装配按[扩展步骤](docs/architecture.md#扩展业务与-viewmodel)更新。
 
 | 目标 | 内容 |
 | --- | --- |
 | `template_core` | 模型、MMKV、服务、Asio 运行时、`app/asyncmain`；不依赖 Qt |
-| `template_gui` | ViewModel、ApplicationContext、QML 注册与资源 |
+| `template_gui`、`template_guiplugin` | ViewModel、ApplicationContext 与 `Template.Ui` QML 模块及其静态插件 |
 | `qt_template` | Qt 桌面应用 |
 | `test_asyncmain`、`test_storage`、`test_business` | 无 Qt 测试 |
 | `test_viewmodel`、`test_qml` | Qt 适配与 QML 交互测试 |
@@ -151,13 +135,13 @@ getter 返回 `expected<optional<T>, storage::Error>`：缺失键为空 optional
 
 `.zed/settings.json` 为 `.cppm`、`.ixx` 启用 C++ 与 clangd Modules 支持。使用匹配工具链的 clangd，将其加入 Zed 的 PATH，或在个人设置的 `lsp.clangd.binary.path` 指定绝对路径。[Zed clangd 配置](https://zed.dev/docs/languages/cpp#binary)。
 
-xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模块和标准库模块。`.clangd` 让 clangd 自建一致的 BMI。编译数据库包含本机路径，已被 Git 忽略；切换标准或目录后重新构建，再重启语言服务器。
+CMake 在每个构建目录导出 `compile_commands.json`，覆盖命名模块（通过 `@…modmap` 响应文件）和标准库模块。`.clangd` 读取 `build/debug` 的编译数据库，并让 clangd 自建一致的 BMI；使用其他预设时修改 `.clangd` 的 `CompilationDatabase`。编译数据库包含本机路径，位于被 Git 忽略的 `build/`；切换标准或目录后重新配置，再重启语言服务器。
 
-运行 `xmake check-clangd` 会先构建并刷新编译数据库，再使用当前 LLVM SDK 的 clangd 检查项目 C++ 源码与模块的解析、类型和索引诊断；不执行逐位置的重构功能自检（泛型 auto 无法展开成具体类型）。MMKV SDK 头文件保留在私有 `:sdk` 实现分区的全局模块片段，存储实现导入该分区，避免 clangd 同时解析 SDK 标准库头文件和 import std 时的类型歧义；Windows 仍保持 include-before-import。
+`cmake --build --preset debug --target check_clangd` 使用 `LLVM_ROOT` 中的 clangd 检查项目全部 C++ 源码与模块的解析、类型和索引诊断；不执行逐位置的重构功能自检（泛型 auto 无法展开成具体类型）。MMKV SDK 头文件保留在私有 `:sdk` 实现分区的全局模块片段，存储实现导入该分区，避免 clangd 同时解析 SDK 标准库头文件和 import std 时的类型歧义；Windows 仍保持 include-before-import。
 
 业务使用 `import std;`，按需声明 `using std::具体类型`。不使用 `using namespace std` 或假定存在 `std:vector` 等外部逐类型分区。Qt、Asio、MMKV 头文件按其工具链要求接入。
 
-[xmake/modules.lua](xmake/modules.lua) 在切换配置时清理旧模块映射，并按项目内的 `#include` 与 `import` 关系，只让依赖改动文件的 BMI 与对象失效；删除头文件或模块接口时全部失效。依赖目标的 BMI 在编译参数兼容时复用，未被导入的标准库模块（如 `std.compat`）被裁剪。生成的 BMI、构建产物和编译数据库不进入版本控制。
+CMake 与 Ninja 用 clang-scan-deps 扫描模块依赖：头文件、模块接口或实现分区变化时，只重新编译依赖它们的 BMI 与对象。每个模块的 BMI 由声明它的目标编译一次，其他目标共享。Clang 默认生成精简 BMI，只保留模块引用到的全局模块片段声明；导入方实例化模板时按 ADL 查找的声明（如 Asio 通道错误码的 `make_error_code`）需在模块内显式引用，见 `asyncmain.cppm` 的 `channelError`。`qt_add_executable` 在 Qt 自己的策略作用域内创建目标，CMP0155 尚未启用，因此这些目标显式开启模块扫描。生成的 BMI、构建产物和编译数据库不进入版本控制。
 
 ## 验证
 
@@ -168,12 +152,12 @@ xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模�
 | `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出、带上下文的错误、构造失败与约定异常 |
 | `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作、并发命令只锁定各自目标、并发错误按目标保留与清除 |
 | `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态、保存中只锁定所在行并提示被拒绝的命令、其他任务成功时仍显示新增失败 |
-| `xmake lint` | 生成的 QML 类型信息与全部 QML 文件；警告使检查失败 |
-| `xmake check-clangd` | 当前配置中项目 C++ 源码、模块及 MMKV SDK 私有分区的编辑器诊断 |
+| `lint` 目标 | `qt_add_qml_module` 生成的 qmllint 检查全部 QML 文件 |
+| `check_clangd` 目标 | 当前预设中项目 C++ 源码、模块及 MMKV SDK 私有分区的编辑器诊断 |
 
-本机已使用 macOS ARM64、xmake 3.1.1、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：C++23/26 桌面配置各 5 项测试通过，无 Qt 配置各 3 项测试通过；qmllint、clangd 与头文件/实现变更的增量构建检查通过。
+本机已使用 macOS ARM64、CMake 4.4.4、Ninja 1.13.2、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：`debug`、`debug-cxx26`、`release` 预设各 7 项 CTest 测试通过，`core` 预设 5 项通过，构建无警告；qmllint、`check_clangd`（18 个源文件）、qmlcachegen 预编译单元的运行时使用，以及头文件与模块接口变更的增量构建检查通过。
 
-[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。远端 CI 在 `c0b0860` 上运行，六个任务的构建、测试与 qmllint 全部通过，macOS 任务的 `xmake check-clangd` 也已通过。
+[GitHub Actions](.github/workflows/ci.yml) 使用 CMake 4.4.4 与 Ninja，在 Windows、macOS、Linux 上运行 `debug` 与 `debug-cxx26` 预设，并在 Linux 上运行无 Qt 的 `core` 预设；统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。迁移到 CMake 后的远端 CI 结果以最新一次运行为准。
 
 ## 复用模板
 

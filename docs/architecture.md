@@ -38,7 +38,7 @@ Qt 类型止于 ViewModel 适配边界及外侧的 UI、装配和启动代码。
 
 业务、ViewModel 和应用模块按模块建立子目录，接口、实现与可选分区位于同一目录，允许多个实现文件。`storage/{mmkv.cppm,mmkv.cpp}` 与 `runtime/{asioruntime.cppm,asioruntime.cpp}` 直接使用分层目录。
 
-逻辑名称由 `export module` 决定，文件移动不改变 import 名称。xmake 自动发现既有分层的源码，模块接口设为 public，由工具链扫描 import 依赖；额外库依赖显式声明。
+逻辑名称由 `export module` 决定，文件移动不改变 import 名称。CMake 按分层自动发现源码，模块接口加入公开的 `CXX_MODULES` 文件集，由 Ninja 调用 clang-scan-deps 扫描 import 依赖；额外库依赖在 `cmake/Dependencies.cmake` 显式声明。每个模块的 BMI 由声明它的目标编译一次，其他目标共享。Clang 默认生成精简 BMI，只保留模块引用的全局模块片段声明，因此导出模板在导入方实例化时才按 ADL 查找的实体要在模块内显式引用，例如 `asyncmain.cppm` 的 `channelError` 保留 Asio 通道错误码的 `make_error_code` 与 `is_error_code_enum` 特化。
 
 统一使用 C++23，可整体切换 C++26。业务通过 `import std;` 使用标准库，按需列出 `using std::具体类型`。局部变量和工厂结果灵活使用 auto / const auto，公共返回契约、数值宽度与资源所有权保持清晰。Qt、Asio、MMKV 的头文件按 SDK 要求接入。
 
@@ -46,7 +46,7 @@ Qt 类型止于 ViewModel 适配边界及外侧的 UI、装配和启动代码。
 
 ViewModel 和 ApplicationContext 保留 `.cppm`、`.h`、`.cpp` 混合结构：
 
-- `.h` 声明 QObject、Q_OBJECT、Q_PROPERTY 和信号，供 moc 与 QML_FOREIGN 使用；PIMPL 隔开业务模块类型。
+- `.h` 声明 QObject、Q_OBJECT、Q_PROPERTY 和信号，供 AUTOMOC 与 `qt_add_qml_module` 的 QML_FOREIGN 注册使用；PIMPL 隔开业务模块类型。
 - `.cppm` 在全局模块片段包含头文件，通过 `export using` 暴露类，QObject 类仍属于全局模块。
 - 普通实现 `.cpp` 不声明命名模块，导入自己的模块取得业务依赖定义。
 - Dependencies、Initialization 在头文件中前置声明，定义位于 `.cppm` 的 `extern "C++"` 块；它们保持全局模块归属，同时引用业务模块类型。
@@ -101,7 +101,7 @@ ViewModel 的 Q_INVOKABLE 返回 true 只表示命令已接受。业务先保存
 
 ## 通用 MMKV 后端
 
-MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 头文件集中在 mmkv_sdk.cppm 的全局模块片段；该文件声明私有实现分区 Template.Storage.Mmkv:sdk，存储实现通过 import :sdk 使用其声明。分区不会从主接口导出，SDK 的宏与 TU-local 操作留在分区内部，保持原生 C++ 链接、SDK 类型的全局模块归属与 include-before-import 顺序，也避免 clangd 合并 SDK 头文件与标准库模块时出现类型歧义。xmake 的增量依赖图同时跟踪实现分区，修改它时会使依赖它的模块单元失效。
+MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 头文件集中在 mmkv_sdk.cppm 的全局模块片段；该文件声明私有实现分区 Template.Storage.Mmkv:sdk，存储实现通过 import :sdk 使用其声明。分区不会从主接口导出，SDK 的宏与 TU-local 操作留在分区内部，保持原生 C++ 链接、SDK 类型的全局模块归属与 include-before-import 顺序，也避免 clangd 合并 SDK 头文件与标准库模块时出现类型歧义。Ninja 的模块依赖扫描同时跟踪实现分区，修改它时会使导入它的模块单元重新编译。
 
 后端负责键值读写、文件完整性、操作锁、同步与句柄生命周期。打开前完整校验 CRC，避免 MMKV 默认恢复丢弃数据；之后的访问比较数据与元数据文件的大小和修改时间，发现外部改动时重新完整校验。TaskService 负责 tasks.items 键、记录编解码、业务校验与错误转换。任务示例使用原生字符串列表，每条记录按 ID、标题、完成标记排列。
 
@@ -111,11 +111,11 @@ getter 返回 expected<optional<T>, storage::Error>，区分缺失键、空值�
 
 ## 扩展业务与 ViewModel
 
-1. 在 models / services 下添加业务模块与协程接口，使用应用注入的执行器；存储通过具名键或独立 MMKV 实例使用。源码由 xmake 自动发现。
+1. 在 models / services 下添加业务模块与协程接口，使用应用注入的执行器；存储通过具名键或独立 MMKV 实例使用。源码由 CMake 自动发现。
 2. 添加 ViewModel 模块目录、QObject 头文件、导入入口与实现；Dependencies 只列出所需服务。需要应用级初始化时定义 `Initialization{executor, result}` 与 `initialize()`、`stop()`，结果类型与服务的启动操作一致。
 3. 在 ApplicationContext::Impl 依次声明服务与 ViewModel 成员（context 为应用级 ViewModel 的 QObject 父对象），并在构造函数中调用一次 `attach(viewModel, service, &Service::operation)`；启动步骤、初始化、退出与析构顺序由它统一处理，`app/asyncmain` 无需修改。不需要启动加载的 ViewModel 调用 `attach(viewModel)`，只登记退出时的 `stop()`。
 4. 给 ApplicationContext 增加强类型只读 Q_PROPERTY，在 ui/qmltypes.h 添加 QML_FOREIGN / QML_NAMED_ELEMENT / QML_UNCREATABLE 注册；main 保持统一的 appContext 注入。
-5. 根组件将具体 ViewModel 传给页面，页面声明 required property；新增 QML 文件自动进入资源与 qmldir，当前资源生成器要求 QML 文件名在 src/ui 内唯一。
+5. 根组件将具体 ViewModel 传给页面，页面声明 required property；新增 QML 文件由 `qt_add_qml_module` 自动收集进资源、qmldir、qmllint 与 qmlcachegen；文件平铺在 `/qt/qml/Template/Ui` 下，因此 QML 文件名在 src/ui 内唯一。`Template.Ui` 构建为静态插件，应用与 QML 测试通过 `Q_IMPORT_QML_PLUGIN(Template_UiPlugin)` 导入。
 6. 按改动验证 C++23/26、受影响的业务与 ViewModel/QML 测试、qmllint、clangd；涉及业务边界时检查无 Qt 构建。验证要求见 [AGENTS.md](../AGENTS.md#验证与编辑器)。
 
 同一份界面状态复用同一个 ViewModel；页面需要独立状态时，由对应作用域创建、持有并注入共享服务。类型注册与实例装配分开，QML 不直接创建应用持有的实例。[Qt 注册宏](https://doc.qt.io/qt-6/qqmlintegration-h.html#QML_UNCREATABLE)。

@@ -1,0 +1,40 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 4, "minor": 4, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "Clang from LLVM_ROOT and the Qt SDK in QT_ROOT; build trees live under build/<preset>.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": { "PATH": "$env{LLVM_ROOT}/bin${pathListSep}$penv{PATH}" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}"
+      }
+    },
+    { "name": "debug", "displayName": "Debug, C++23", "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+    { "name": "release", "displayName": "Release, C++23", "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    { "name": "debug-cxx26", "displayName": "Debug, C++26", "inherits": "debug",
+      "cacheVariables": { "TEMPLATE_CXX_STANDARD": "26" } },
+    { "name": "core", "displayName": "Debug, C++23, without Qt", "inherits": "debug",
+      "cacheVariables": { "TEMPLATE_GUI": "OFF" } }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug-cxx26", "configurePreset": "debug-cxx26" },
+    { "name": "core", "configurePreset": "core" }
+  ],
+  "testPresets": [
+    { "name": "base", "hidden": true, "output": { "outputOnFailure": true } },
+    { "name": "debug", "inherits": "base", "configurePreset": "debug" },
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "debug-cxx26", "inherits": "base", "configurePreset": "debug-cxx26" },
+    { "name": "core", "inherits": "base", "configurePreset": "core" }
+  ]
+}

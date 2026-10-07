@@ -1,5 +1,4 @@
 /build/
-/.xmake/
 /install/
 /compile_commands.json
 /.cache/clangd/

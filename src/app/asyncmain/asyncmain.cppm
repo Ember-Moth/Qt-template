@@ -15,6 +15,16 @@ using std::vector;
 using std::optional;
 using std::string;
 
+namespace application::detail {
+// Importers instantiate Asio channel templates that turn channel_errors into error_code through
+// std::is_error_code_enum and ADL make_error_code. Reduced BMIs keep only global-fragment
+// declarations the module references, so reference both here.
+inline auto channelError(asio::experimental::error::channel_errors code) -> asio::error_code
+{
+    return code;
+}
+} // namespace application::detail
+
 export namespace application {
 // Application wiring failures; all are thrown as Exception because the run cannot continue.
 enum class ErrorCode { missingDependency, contractViolation };

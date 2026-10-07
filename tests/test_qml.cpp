@@ -1,4 +1,3 @@
-#include "ui/initialize.h"
 #include "test_qml.h"
 #include <QDir>
 #include <QFile>
@@ -10,8 +9,11 @@
 #include <QQuickWindow>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QtQml/qqmlextensionplugin.h>
 
 import Template.App.Context;
+
+Q_IMPORT_QML_PLUGIN(Template_UiPlugin)
 
 namespace {
 QQuickItem *findItem(QQuickItem *root, const QString &name)
@@ -29,7 +31,6 @@ void clickItem(QQuickWindow *window, QQuickItem *item)
 }
 void QmlTest::initTestCase()
 {
-    initializeTemplateUi();
     QQuickStyle::setStyle("Fusion");
 }
 

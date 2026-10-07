@@ -1,4 +1,5 @@
 CompileFlags:
-  CompilationDatabase: .
+  # The debug preset's compilation database; other presets write theirs under build/<preset>.
+  CompilationDatabase: build/debug
   # Let clangd build one coherent set of module BMIs for its own AST.
   Remove: [-fmodule-file=*]

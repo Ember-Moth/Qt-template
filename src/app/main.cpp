@@ -1,18 +1,20 @@
-#include "ui/initialize.h"
 #include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QStandardPaths>
+#include <QtQml/qqmlextensionplugin.h>
 
 #include <cstdlib>
 
 import Template.App.Context;
 
+// Template.Ui is a static QML plugin: importing it registers its types, resources and compiled QML.
+Q_IMPORT_QML_PLUGIN(Template_UiPlugin)
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
-    initializeTemplateUi();
     QCoreApplication::setOrganizationName(QStringLiteral("Example"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("example.org"));
     QCoreApplication::setApplicationName(QStringLiteral("QtTemplate"));
