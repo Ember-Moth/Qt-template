@@ -10,7 +10,7 @@ Windows、macOS、Linux 的 Qt QML + MVVM 开发模板。默认统一使用 C++2
 
 ## 构建与运行
 
-需要 xmake 3.1.1+、支持命名模块与 `import std;` 的完整编译器/标准库工具链，以及 Qt 6.8+ 桌面 SDK。编译器、标准库和 clangd 使用匹配版本。以下平台命令对应仓库的工具链配置；本机验证环境和远端 CI 状态见[验证](#验证)。
+需要 xmake 3.1.1+、LLVM/Clang 19+ 以及 Qt 6.8+ 桌面 SDK。三个平台统一使用 Clang，标准库与该平台的 Qt SDK 一致：macOS 用 libc++，Linux 用 libstdc++，Windows 用 MSVC STL。编译器、标准库和 clangd 使用匹配版本。以下平台命令对应仓库的工具链配置；本机验证环境和远端 CI 状态见[验证](#验证)。
 
 macOS 使用 LLVM/libc++：
 
@@ -25,21 +25,22 @@ xmake lint
 xmake run qt_template
 ```
 
-Linux 配置 GCC/libstdc++ 与 Qt SDK，`QT_ROOT` 指向本机 SDK 目录：
+Linux 使用 Clang 与系统 libstdc++ 15+（提供 `std` 模块源码）。`LLVM_ROOT` 指向 LLVM 安装目录（如 `/usr/lib/llvm-21`），`QT_ROOT` 指向本机 SDK 目录：
 
 ```sh
-xmake f -y -m debug --toolchain=gcc --cxx=g++-15 --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
+xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
 xmake build qt_template
 xmake test
 xmake lint
 xmake run qt_template
 ```
 
-Windows 在 VS x64 开发者环境中配置 MSVC 与匹配的 Qt SDK：
+Windows 在 VS x64 开发者环境中使用 LLVM Clang 与 MSVC STL，Qt 使用 MSVC 套件：
 
 ```powershell
+$env:LLVM_ROOT = "C:/Program Files/LLVM"
 $env:QT_ROOT = "C:/Qt/6.8.3/msvc2022_64"
-xmake f -y -m debug --toolchain=msvc --qt="$env:QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
+xmake f -y -m debug --toolchain=llvm --sdk="$env:LLVM_ROOT" --qt="$env:QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
 xmake build qt_template
 xmake test
 xmake lint
@@ -162,7 +163,7 @@ xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模�
 
 本机已使用 macOS ARM64、xmake 3.1.1、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：C++23/26 桌面配置各 5 项测试通过，无 Qt 配置各 3 项测试通过；qmllint、clangd 与头文件/实现变更的增量构建检查通过。
 
-[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，Qt SDK 为 6.8.3。以上是本机验证结果，远端 CI 尚未在本次开发中运行。
+[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 Clang，Qt SDK 为 6.8.3。以上是本机验证结果；远端 CI 此前使用 GCC/MSVC 配置时三个平台均未通过，改为统一 Clang 后的结果以最新一次运行为准。
 
 ## 复用模板
 

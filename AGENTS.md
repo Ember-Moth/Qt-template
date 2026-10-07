@@ -29,8 +29,8 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 
 ## C++ 写法与异步接口
 
-- 项目默认统一使用 C++23，保留 C++26 配置选项，使用同一套兼容的编译器与标准库工具链。
-- 业务代码使用命名模块及标准 `import std;`，按需使用 `using std::具体类型`，不使用 `using namespace std`。不改回标准库头文件方案，也不假设工具链提供可供外部导入的 `std:vector` 等逐类型分区。Asio、MMKV、Qt 的头文件仍按其工具链要求使用。
+- 项目默认统一使用 C++23，保留 C++26 配置选项，使用同一套兼容的编译器与标准库工具链。三个平台统一使用 Clang，标准库与该平台的 Qt SDK 一致：macOS 用 libc++，Linux 用 libstdc++，Windows 用 MSVC STL；不使用 GCC 或 MSVC 编译器。
+- 业务代码使用命名模块及标准 `import std;`，按需使用 `using std::具体类型`，不使用 `using namespace std`。不改回标准库头文件方案，也不假设工具链提供可供外部导入的 `std:vector` 等逐类型分区。Asio、MMKV、Qt 的头文件仍按其工具链要求使用，并放在 `import std;` 之前（模块单元放在全局模块片段）；MSVC STL 不支持先 import 后 include。
 - 灵活使用 `auto`、`const auto`、引用和有意义的类型别名，避免重复长类型名；公共接口的返回契约、数值宽度和资源所有权保持清晰。
 - Asio 业务接口使用 `asio::awaitable`、`co_await` 和 `co_return`，调用方在服务执行器上用 `co_spawn` 启动。业务接口不接收完成回调；Qt 桥接和测试边界可以使用完成处理器或 `use_future`。
 - Asio 公共运行时放在 `runtime`，由 ApplicationContext 创建并统一管理其生命周期。运行时管理 `io_context`、work guard 与后台线程；业务服务接收注入的执行器，不创建自己的事件循环或线程，不依赖其他业务服务获取公共运行时。

@@ -89,7 +89,7 @@ ViewModel 的 Q_INVOKABLE 返回 true 只表示命令已接受。业务先保存
 
 ## 通用 MMKV 后端
 
-MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 类型集中在存储实现中：先导入 std，再在 extern "C++" 块中包含 SDK 头文件，保持原生 C++ 链接和全局模块归属。
+MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 类型集中在存储实现中：SDK 头文件放在实现单元的全局模块片段，先于 import std 包含，保持原生 C++ 链接和全局模块归属，也符合 MSVC STL 只支持先 include 后 import 的要求。
 
 后端负责键值读写、文件完整性、操作锁、同步与句柄生命周期。打开前完整校验 CRC，避免 MMKV 默认恢复丢弃数据；之后的访问比较数据与元数据文件的大小和修改时间，发现外部改动时重新完整校验。TaskService 负责 tasks.items 键、记录编解码、业务校验与错误转换。任务示例使用原生字符串列表，每条记录按 ID、标题、完成标记排列。
 

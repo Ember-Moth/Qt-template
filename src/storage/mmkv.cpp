@@ -1,12 +1,11 @@
-module Template.Storage.Mmkv;
-import std;
-
-extern "C++" {
-// Keep SDK declarations in the global module, sharing types from import std.
+module;
+// SDK headers pull in standard headers; MSVC STL supports them only before import std.
 #include "MMKV/MMKV.h"
 #include "MMKVMetaInfo.hpp"
 #include "crc32/Checksum.h"
-}
+
+module Template.Storage.Mmkv;
+import std;
 
 using std::string;
 using std::vector;

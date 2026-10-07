@@ -25,8 +25,10 @@ set_policy("build.c++.modules.culling", false)
 -- Keep each target's BMIs tied to its own flags and selected language standard.
 set_policy("build.c++.modules.reuse", false)
 
+-- Clang on every platform, with the C++ library of the platform's Qt SDK:
+-- libc++ on macOS, libstdc++ on Linux and the MSVC STL on Windows.
+set_toolchains("llvm")
 if is_plat("macosx") then
-    set_toolchains("llvm")
     local llvm = get_config("sdk") or os.getenv("LLVM_ROOT")
     if llvm then
         set_toolset("ar", path.join(llvm, "bin/llvm-ar"))
