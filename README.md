@@ -163,7 +163,7 @@ xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模�
 
 本机已使用 macOS ARM64、xmake 3.1.1、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：C++23/26 桌面配置各 5 项测试通过，无 Qt 配置各 3 项测试通过；qmllint、clangd 与头文件/实现变更的增量构建检查通过。
 
-[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。以上是本机验证结果；远端 CI 此前使用 GCC/MSVC 配置时三个平台均未通过，改为统一 Clang 后的结果以最新一次运行为准。
+[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。以上是本机验证结果；远端 CI 已在三个平台运行，C++23/26 共 6 个任务的构建、测试与 qmllint 全部通过。
 
 ## 复用模板
 
