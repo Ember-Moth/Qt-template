@@ -19,7 +19,9 @@ using std::map;
 using std::scoped_lock;
 using std::error_code;
 using std::ifstream;
+using std::optional;
 using std::size_t;
+using std::uintmax_t;
 using std::uint32_t;
 using std::uint8_t;
 using std::streamsize;
@@ -30,12 +32,31 @@ auto storageError(string detail) -> Error { return {ErrorCode::io, std::move(det
 auto formatError(string detail) -> Error { return {ErrorCode::invalidFormat, std::move(detail)}; }
 using StoreKey = std::pair<std::filesystem::path, string>;
 
+struct FileStamp
+{
+    uintmax_t size;
+    std::filesystem::file_time_type time;
+    bool operator==(const FileStamp &) const = default;
+};
+struct Fingerprint
+{
+    FileStamp data;
+    FileStamp metadata;
+    bool operator==(const Fingerprint &) const = default;
+};
+// Shared by aliases: serializes access and remembers the files as last checked or written.
+struct Operations
+{
+    mutex gate;
+    optional<Fingerprint> verified;
+};
+
 struct StoreEntry
 {
     MMKV *store;
     size_t references;
     bool readOnly;
-    shared_ptr<mutex> operations;
+    shared_ptr<Operations> operations;
 };
 struct StoreRegistry
 {
@@ -92,6 +113,23 @@ auto validateStore(const std::filesystem::path &directory, const string &identif
     return {};
 }
 
+auto stamp(const std::filesystem::path &file) -> optional<FileStamp>
+{
+    auto error = error_code{};
+    const auto size = std::filesystem::file_size(file, error);
+    if (error) return std::nullopt;
+    const auto time = std::filesystem::last_write_time(file, error);
+    if (error) return std::nullopt;
+    return FileStamp{size, time};
+}
+auto fingerprint(const std::filesystem::path &directory, const string &identifier) -> optional<Fingerprint>
+{
+    const auto data = stamp(directory / identifier);
+    const auto metadata = stamp(directory / (identifier + ".crc"));
+    if (!data || !metadata) return std::nullopt;
+    return Fingerprint{*data, *metadata};
+}
+
 } // namespace
 
 struct MmkvStore::Impl
@@ -102,7 +140,7 @@ struct MmkvStore::Impl
     mutable mutex gate;
     mutable MMKV *store = nullptr;
     mutable std::filesystem::path canonical;
-    mutable shared_ptr<mutex> operations;
+    mutable shared_ptr<Operations> operations;
 
     Impl(std::filesystem::path path, string id, bool mode)
         : directory(std::move(path)), identifier(std::move(id)), readOnly(mode) {}
@@ -158,13 +196,15 @@ struct MmkvStore::Impl
         config.rootPath = &native;
         store = MMKV::mmkvWithID(identifier, config);
         if (!store) return std::unexpected(storageError("Cannot open the MMKV store."));
-        operations = std::make_shared<mutex>();
+        operations = std::make_shared<Operations>();
         pool.stores.emplace(StoreKey{canonical, identifier}, StoreEntry{store, 1, readOnly, operations});
         return {};
     }
 
     auto validate() const -> Result<void>
     {
+        // Skip the full CRC pass while the files match the last check or locked operation.
+        if (operations->verified && operations->verified == fingerprint(canonical, identifier)) return {};
         auto error = error_code{};
         if (!std::filesystem::is_directory(canonical, error) || error)
             return std::unexpected(storageError("The MMKV directory is unavailable."));
@@ -178,9 +218,12 @@ struct MmkvStore::Impl
         if (writing && readOnly)
             return std::unexpected(storageError("The MMKV store is read-only."));
         if (auto opened = open(); !opened) return std::unexpected(opened.error());
-        const auto serialized = scoped_lock(*operations);
+        const auto serialized = scoped_lock(operations->gate);
         if (auto valid = validate(); !valid) return std::unexpected(valid.error());
-        return operation(*store);
+        auto result = operation(*store);
+        // MMKV's own changes are trusted; outside edits show a new size or modification time.
+        operations->verified = fingerprint(canonical, identifier);
+        return result;
     }
     template <class T, class Getter>
     auto read(std::string_view key, Getter getter) const -> Result<std::optional<T>>

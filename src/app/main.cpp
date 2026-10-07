@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
     QQuickStyle::setStyle(QStringLiteral("Fusion"));
 
     const auto dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    ApplicationContext context(QDir(dataDirectory).filePath(QStringLiteral("mmkv")), &app);
+    ApplicationContext context(QDir(dataDirectory).filePath(QStringLiteral("mmkv")));
 
     // The engine is destroyed first; injected C++ objects outlive all QML views.
     QQmlApplicationEngine engine;

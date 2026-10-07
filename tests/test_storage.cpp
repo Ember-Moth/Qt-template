@@ -6,6 +6,7 @@ using std::string_view;
 using std::error_code;
 using std::ifstream;
 using std::ofstream;
+using std::fstream;
 using std::jthread;
 using std::atomic;
 using std::source_location;
@@ -34,6 +35,13 @@ void writeFile(const std::filesystem::path &path, string_view content)
     auto file = ofstream(path, std::ios::binary | std::ios::trunc);
     require(file.is_open());
     file << content;
+    require(file.good());
+}
+void patchFile(const std::filesystem::path &path, std::streamoff offset, char value)
+{
+    auto file = fstream(path, std::ios::binary | std::ios::in | std::ios::out);
+    require(file.is_open());
+    file.seekp(offset).put(value).flush();
     require(file.good());
 }
 void typedValues()
@@ -129,6 +137,19 @@ void corruptedStore()
     auto corrupted = original;
     require(corrupted.size() > 12);
     corrupted[12] ^= 0x7f;
+    {
+        // Outside edits to an open store trigger the full check again.
+        storage::MmkvStore store(directory.path, "settings");
+        require(store.getString("name")->value() == "Keep original data");
+        const auto time = std::filesystem::last_write_time(dataPath);
+        // Coarse file clocks may not tick between writes; move the timestamp explicitly.
+        patchFile(dataPath, 12, corrupted[12]);
+        std::filesystem::last_write_time(dataPath, time + std::chrono::seconds(1));
+        require(!store.getString("name") && !store.setString("name", "Overwrite"));
+        patchFile(dataPath, 12, original[12]);
+        std::filesystem::last_write_time(dataPath, time + std::chrono::seconds(2));
+        require(store.getString("name")->value() == "Keep original data");
+    }
     writeFile(dataPath, corrupted);
     {
         storage::MmkvStore store(directory.path, "settings");

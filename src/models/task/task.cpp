@@ -9,6 +9,7 @@ using std::expected;
 using std::unordered_set;
 using std::mt19937_64;
 using std::random_device;
+using std::seed_seq;
 using std::size_t;
 using std::uint32_t;
 using std::uint16_t;
@@ -101,7 +102,12 @@ SaveResult validateTasks(span<const Task> tasks)
 
 string createTaskId()
 {
-    thread_local auto generator = mt19937_64{random_device{}()};
+    // A single 32-bit seed can repeat a whole ID sequence across launches.
+    thread_local auto generator = [] {
+        auto device = random_device{};
+        auto seeds = seed_seq{device(), device(), device(), device(), device(), device(), device(), device()};
+        return mt19937_64{seeds};
+    }();
     const auto first = generator();
     const auto second = generator();
     return std::format("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
