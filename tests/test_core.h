@@ -11,5 +11,6 @@ private slots:
     void commandsAndModelNotifications();
     void validationAndSaveFailure();
     void concurrentCommandsLockOnlyTheirTargets();
+    void concurrentErrorsStayWithTheirTargets();
     void loadRecoveryAndDestruction();
 };

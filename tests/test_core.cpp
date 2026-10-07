@@ -223,6 +223,10 @@ void ViewModelTest::validationAndSaveFailure()
     QVERIFY(viewModel.setTaskCompleted(id, true));
     QTRY_VERIFY(!viewModel.busy());
     QCOMPARE(viewModel.remainingCount(), 0);
+    // The row recovered; its success must keep the separate failed add visible.
+    QVERIFY(!viewModel.errorMessage().isEmpty());
+    QVERIFY(viewModel.addTask("Unsaved"));
+    QTRY_VERIFY(!viewModel.busy());
     QVERIFY(viewModel.errorMessage().isEmpty());
 }
 
@@ -276,6 +280,52 @@ void ViewModelTest::concurrentCommandsLockOnlyTheirTargets()
     loading.open();
     QTRY_VERIFY(!viewModel.busy());
     QVERIFY(!viewModel.loading() && viewModel.ready());
+}
+
+void ViewModelTest::concurrentErrorsStayWithTheirTargets()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath("mmkv");
+    TaskFixture fixture(path);
+    TaskViewModel viewModel(fixture.dependencies());
+    QVERIFY(viewModel.reload());
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.addTask("Existing"));
+    QTRY_VERIFY(!viewModel.busy());
+    const auto id = viewModel.tasks()->tasks().at(0).id;
+
+    // Both outcomes arrive together: the unrelated success must not clear the add error.
+    RuntimeGate first(fixture.asyncRuntime);
+    QVERIFY(viewModel.addTask(QString(121, QChar('x'))));
+    QVERIFY(viewModel.setTaskCompleted(id, true));
+    first.open();
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.tasks()->tasks().at(0).completed);
+    QVERIFY(!viewModel.errorMessage().isEmpty());
+    const auto addError = viewModel.errorMessage();
+
+    // Keep both failures, then resolve them independently.
+    const auto offline = path + ".offline";
+    QVERIFY(QDir().rename(path, offline));
+    QFile blocker(path);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+    QVERIFY(viewModel.setTaskCompleted(id, false));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.errorMessage().contains(addError));
+    QVERIFY(viewModel.errorMessage().contains("Storage error:"));
+    QVERIFY(QFile::remove(path));
+    QVERIFY(QDir().rename(offline, path));
+
+    QVERIFY(viewModel.addTask("Corrected title"));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(!viewModel.errorMessage().contains(addError));
+    QVERIFY(viewModel.errorMessage().contains("Storage error:"));
+    // Removing that same task also resolves its earlier update failure.
+    QVERIFY(viewModel.removeTask(id));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.errorMessage().isEmpty());
 }
 
 void ViewModelTest::loadRecoveryAndDestruction()

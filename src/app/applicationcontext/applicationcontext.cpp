@@ -1,5 +1,6 @@
 #include "app/applicationcontext/applicationcontext.h"
 #include <asio/co_spawn.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
 #include <asio/strand.hpp>
 #include <QCoreApplication>
 #include <QDebug>

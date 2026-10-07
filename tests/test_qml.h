@@ -8,6 +8,7 @@ private slots:
     void initTestCase();
     void viewCommandsAndSaveFailure();
     void pendingTaskLocksOnlyItsRow();
+    void failedAddRemainsVisibleDuringOtherChanges();
     void viewRequiresInjectedContext();
     void registeredDependenciesAreProvidedByCpp();
 };

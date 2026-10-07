@@ -66,6 +66,34 @@ task("lint")
     set_menu({usage = "xmake lint", description = "Check QML against generated type information", options = {}})
 task_end()
 
+task("check-clangd")
+    on_run(function()
+        import("core.project.config")
+        import("core.project.project")
+        import("core.base.task")
+        import("lib.detect.find_tool")
+        task.run("build", {target = has_config("gui") and "template_gui" or "template_core"})
+        local sdk = config.get("sdk")
+        local clangd = assert(find_tool("clangd", {paths = sdk and {path.join(sdk, "bin")} or nil}),
+            "Install clangd from the configured LLVM toolchain")
+        local files = {}
+        for _, target in ipairs(project.ordertargets()) do
+            for _, file in ipairs(target:sourcefiles()) do
+                if path.unix(file):startswith("src/") and (file:endswith(".cpp") or file:endswith(".cppm")) then
+                    files[file] = true
+                end
+            end
+        end
+        for file, _ in table.orderpairs(files) do
+            print("clangd: " .. file)
+            -- Check parsing and indexing; generic auto parameters cannot be expanded by refactoring tweaks.
+            os.vrunv(clangd.program, {"--check=" .. path.absolute(file), "--compile-commands-dir=" .. os.projectdir(),
+                "--experimental-modules-support", "--check-locations=false", "--log=error"})
+        end
+    end)
+    set_menu({usage = "xmake check-clangd", description = "Check project C++ sources and modules with clangd", options = {}})
+task_end()
+
 local function add_modules(layers, qt_headers)
     for _, layer in ipairs(layers) do
         local exclude = layer == "app" and "|asyncmain/**" or ""

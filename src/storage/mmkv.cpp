@@ -1,10 +1,5 @@
-module;
-// SDK headers pull in standard headers; MSVC STL supports them only before import std.
-#include "MMKV/MMKV.h"
-#include "MMKVMetaInfo.hpp"
-#include "crc32/Checksum.h"
-
 module Template.Storage.Mmkv;
+import :sdk;
 import std;
 
 using std::string;
@@ -91,21 +86,21 @@ auto validateStore(const std::filesystem::path &directory, const string &identif
         || !std::filesystem::is_regular_file(metadata, error) || error)
         return std::unexpected(formatError(std::format("'{}' and '{}' must be regular files", dataName, metadataName)));
     if (std::filesystem::file_size(data, error) < sizeof(uint32_t) || error
-        || std::filesystem::file_size(metadata, error) < sizeof(mmkv::MMKVMetaInfo) || error)
+        || std::filesystem::file_size(metadata, error) < sizeof(MMKVMetaInfo) || error)
         return std::unexpected(formatError(std::format("'{}' or '{}' is truncated", dataName, metadataName)));
     // MMKV 2.x keeps actualSize in metadata; its legacy static validator reads the old header.
     auto metadataFile = ifstream{metadata, std::ios::binary};
-    auto info = mmkv::MMKVMetaInfo{};
+    auto info = MMKVMetaInfo{};
     metadataFile.read(reinterpret_cast<char *>(&info), sizeof(info));
     auto dataFile = ifstream{data, std::ios::binary};
     auto legacySize = uint32_t{};
     dataFile.read(reinterpret_cast<char *>(&legacySize), sizeof(legacySize));
     if (!metadataFile || !dataFile)
         return std::unexpected(storageError(std::format("cannot read the headers of '{}' and '{}'", dataName, metadataName)));
-    if (info.m_version > mmkv::MMKVVersionFlag)
+    if (info.m_version > MMKVVersionFlag)
         return std::unexpected(formatError(std::format("metadata version {} in '{}' is newer than supported version {}",
-            static_cast<uint32_t>(info.m_version), metadataName, static_cast<uint32_t>(mmkv::MMKVVersionFlag))));
-    const auto size = info.m_version >= mmkv::MMKVVersionActualSize ? info.m_actualSize : legacySize;
+            static_cast<uint32_t>(info.m_version), metadataName, static_cast<uint32_t>(MMKVVersionFlag))));
+    const auto size = info.m_version >= MMKVVersionActualSize ? info.m_actualSize : legacySize;
     const auto available = std::filesystem::file_size(data, error) - sizeof(legacySize);
     if (size > available || error)
         return std::unexpected(formatError(std::format("payload length {} exceeds the {} bytes in '{}'", size, available, dataName)));
@@ -113,7 +108,7 @@ auto validateStore(const std::filesystem::path &directory, const string &identif
     dataFile.read(bytes.data(), static_cast<streamsize>(bytes.size()));
     if (!dataFile) return std::unexpected(storageError(std::format("cannot read the {}-byte payload of '{}'", size, dataName)));
     // Reject corruption before opening: MMKV's default recovery can discard data.
-    if (CRC32(0, reinterpret_cast<const uint8_t *>(bytes.data()), size) != info.m_crcDigest)
+    if (checksum(0, reinterpret_cast<const uint8_t *>(bytes.data()), size) != info.m_crcDigest)
         return std::unexpected(formatError(std::format("checksum of '{}' does not match '{}'; the data is corrupted", dataName, metadataName)));
     return {};
 }
@@ -227,7 +222,7 @@ struct MmkvStore::Impl
         if (error) return std::unexpected(storageError(std::format("cannot inspect the data file: {}", error.message())));
         if (auto valid = validateStore(canonical, identifier); !valid) return valid;
         auto config = MMKVConfig{};
-        config.mode = readOnly ? MMKV_SINGLE_PROCESS | MMKV_READ_ONLY : MMKV_SINGLE_PROCESS;
+        config.mode = accessMode(readOnly);
         config.rootPath = &native;
         auto opened = guarded<MMKV *>([&] -> Result<MMKV *> { return MMKV::mmkvWithID(identifier, config); });
         if (!opened) return std::unexpected(opened.error());
@@ -257,7 +252,7 @@ struct MmkvStore::Impl
         if (auto opened = open(); !opened) return std::unexpected(failure(opened.error(), action));
         const auto serialized = scoped_lock(operations->gate);
         if (auto valid = validate(); !valid) return std::unexpected(failure(valid.error(), action));
-        auto result = guarded<T>([&] { return operation(*store); });
+        Result<T> result = guarded<T>([&] { return operation(*store); });
         // MMKV's own changes are trusted; outside edits show a new size or modification time.
         operations->verified = fingerprint(canonical, identifier);
         if (!result) return std::unexpected(failure(std::move(result).error(), action));
@@ -369,7 +364,7 @@ auto MmkvStore::setStrings(std::string_view key, span<const string> value) const
 auto MmkvStore::getBytes(std::string_view key) const -> Result<std::optional<Bytes>>
 {
     return m_impl->read<Bytes>(key, [](MMKV &handle, auto key, Bytes &value) {
-        auto buffer = mmkv::MMBuffer{};
+        auto buffer = MMBuffer{};
         if (!handle.getBytes(key, buffer)) return false;
         value.resize(buffer.length());
         if (!value.empty()) std::memcpy(value.data(), buffer.getPtr(), buffer.length());
@@ -379,7 +374,7 @@ auto MmkvStore::getBytes(std::string_view key) const -> Result<std::optional<Byt
 auto MmkvStore::setBytes(std::string_view key, span<const std::byte> value) const -> Result<void>
 {
     return m_impl->write(key, [value](MMKV &handle, auto key) {
-        auto buffer = mmkv::MMBuffer(value.size());
+        auto buffer = MMBuffer(value.size());
         if (!value.empty()) std::memcpy(buffer.getPtr(), value.data(), value.size());
         return handle.set(buffer, key);
     });

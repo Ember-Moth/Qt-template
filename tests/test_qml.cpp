@@ -92,6 +92,12 @@ void QmlTest::viewCommandsAndSaveFailure()
     clickItem(window, remove);
     QTRY_COMPARE(viewModel.totalCount(), 0);
     QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(!viewModel.errorMessage().isEmpty());
+    QCOMPARE(input->property("text").toString(), QString("Retain input on failure"));
+    clickItem(window, add);
+    QTRY_COMPARE(viewModel.totalCount(), 1);
+    QTRY_VERIFY(!viewModel.busy());
+    QTRY_COMPARE(input->property("text").toString(), QString());
     QVERIFY(viewModel.errorMessage().isEmpty());
     QVERIFY2(warnings.isEmpty(), warnings.isEmpty() ? "" : qPrintable(warnings.first().toString()));
 }
@@ -133,6 +139,45 @@ void QmlTest::pendingTaskLocksOnlyItsRow()
     QVERIFY(checkBox->isEnabled());
     QVERIFY(checkBox->property("checked").toBool());
     QVERIFY2(warnings.isEmpty(), warnings.isEmpty() ? "" : qPrintable(warnings.first().toString()));
+}
+
+void QmlTest::failedAddRemainsVisibleDuringOtherChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    ApplicationContext context(directory.filePath("mmkv"));
+    auto &viewModel = *context.tasks();
+    QQmlApplicationEngine engine;
+    engine.setInitialProperties({{"appContext", QVariant::fromValue(&context)}});
+    engine.loadFromModule("Template.Ui", "Main");
+    QCOMPARE(engine.rootObjects().size(), 1);
+    QVERIFY(context.start());
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    QVERIFY(window);
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+    QTRY_VERIFY(viewModel.ready() && !viewModel.busy());
+    QVERIFY(viewModel.addTask("Existing"));
+    QTRY_VERIFY(!viewModel.busy());
+    auto *input = findItem(window->contentItem(), "taskInput");
+    auto *add = findItem(window->contentItem(), "addTaskButton");
+    auto *error = findItem(window->contentItem(), "errorLabel");
+    QVERIFY(input && add && error);
+    const auto title = QString(121, QChar('x'));
+    input->setProperty("text", title);
+    clickItem(window, add);
+    QVERIFY(viewModel.setTaskCompleted(viewModel.tasks()->tasks().at(0).id, true));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.tasks()->tasks().at(0).completed);
+    QVERIFY(error->isVisible());
+    QVERIFY(!error->property("text").toString().isEmpty());
+    QCOMPARE(input->property("text").toString(), title);
+
+    input->setProperty("text", "Corrected title");
+    clickItem(window, add);
+    QTRY_VERIFY(!viewModel.busy());
+    QTRY_COMPARE(viewModel.totalCount(), 2);
+    QVERIFY(!error->isVisible());
+    QCOMPARE(input->property("text").toString(), QString{});
 }
 
 void QmlTest::viewRequiresInjectedContext()

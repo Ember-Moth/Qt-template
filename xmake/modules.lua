@@ -67,6 +67,8 @@ rule("template.modules")
                 local implemented = line:match("^%s*module%s+([%w_.:]+)%s*;")
                 module = exported or implemented or module
                 if exported then definitions[file] = exported end
+                -- An implementation partition also supplies a BMI consumed by other module units.
+                if implemented and implemented:find(":", 1, true) then definitions[file] = implemented end
                 if implemented then add_edge(importers, implemented, file) end
                 local imported = line:match("^%s*export%s+import%s+([%w_.:]+)%s*;")
                     or line:match("^%s*import%s+([%w_.:]+)%s*;")

@@ -89,3 +89,6 @@ jobs:
         run: xmake test -v
       - name: Lint QML
         run: xmake lint
+      - name: Check clangd modules on macOS
+        if: runner.os == 'macOS'
+        run: xmake check-clangd

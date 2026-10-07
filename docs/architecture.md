@@ -97,9 +97,11 @@ ViewModel 的 Q_INVOKABLE 返回 true 只表示命令已接受。业务先保存
 
 不同任务的命令可以同时进行：服务 strand 依次执行，每个结果都是完整快照，按完成顺序应用到界面。ViewModel 只锁定受影响的部分：保存中的任务在列表模型中标记为 pending，只禁用该行；新增进行中时 adding 锁定输入，保证成功后清空的是已提交的文字；加载替换整个列表，loading 期间拒绝其他命令，加载也要等已接受的命令完成后才开始。busy 表示还有操作进行，只用于进度提示。被拒绝的命令返回 false 并发出 commandRejected(reason)，页面显示短暂提示。
 
+错误按加载、新增、任务 ID 分别保留，errorMessage 汇总尚未解决的错误。成功只清除该目标的错误：新增重试成功清除新增错误，某行更新或删除成功清除该行错误，加载成功清除加载错误。其他任务的成功不会隐藏失败；多个目标失败时，可以分别重试并逐项清除。
+
 ## 通用 MMKV 后端
 
-MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 类型集中在存储实现中：SDK 头文件放在实现单元的全局模块片段，先于 import std 包含，保持原生 C++ 链接和全局模块归属，也符合 MSVC STL 只支持先 include 后 import 的要求。
+MmkvStore 不导入业务模型，公共 API 使用标准库类型与独立的 storage::Error。SDK 头文件集中在 mmkv_sdk.cppm 的全局模块片段；该文件声明私有实现分区 Template.Storage.Mmkv:sdk，存储实现通过 import :sdk 使用其声明。分区不会从主接口导出，SDK 的宏与 TU-local 操作留在分区内部，保持原生 C++ 链接、SDK 类型的全局模块归属与 include-before-import 顺序，也避免 clangd 合并 SDK 头文件与标准库模块时出现类型歧义。xmake 的增量依赖图同时跟踪实现分区，修改它时会使依赖它的模块单元失效。
 
 后端负责键值读写、文件完整性、操作锁、同步与句柄生命周期。打开前完整校验 CRC，避免 MMKV 默认恢复丢弃数据；之后的访问比较数据与元数据文件的大小和修改时间，发现外部改动时重新完整校验。TaskService 负责 tasks.items 键、记录编解码、业务校验与错误转换。任务示例使用原生字符串列表，每条记录按 ID、标题、完成标记排列。
 

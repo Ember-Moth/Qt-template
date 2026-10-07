@@ -52,16 +52,17 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 - 固定使用 MMKV 和 Asio，直接依赖具体实现；不为假设的后端替换引入 Repository、Runtime 抽象接口、工厂或适配层。
 - MMKV 代码集中在 `storage/`，由通用 MmkvStore 负责键值读写与句柄管理；任务键、任务记录格式和业务校验由 TaskService 负责；AsioRuntime 位于 `runtime/`，保留集中管理运行时资源的职责。依赖注入用于装配和生命周期管理。
 - 存储与业务测试使用临时目录中的真实 MMKV，不为测试新增可替换存储接口。
-- 持久化后端使用 MMKV 官方 C++ Core，SDK 类型集中在 `storage/mmkv.cpp` 的实现；公共 API 只使用标准库类型与独立的 storage::Error，不导入任务或其他业务模型。
+- 持久化后端使用 MMKV 官方 C++ Core，SDK 头文件集中在 `storage/mmkv_sdk.cppm` 的私有实现分区，全局模块片段保持 include-before-import；`storage/mmkv.cpp` 导入 `:sdk` 使用原生类型。公共 API 只使用标准库类型与独立的 storage::Error，不导入任务或其他业务模型，也不导出 SDK 分区。
 - ApplicationContext 创建共享 MmkvStore 并注入服务；不同业务使用具名键（如 settings.theme、tasks.items），按需使用独立的实例 ID。任务示例的编解码在 TaskService 中完成。
 - 保持模板简洁，不恢复 JSON 依赖、旧格式兼容或数据迁移代码，不恢复独立的 `business_main.cpp` 示例入口。
 - 持久化成功后提交业务状态，失败保留已提交状态；新增成功后才清空界面输入。
 - 保存期间只锁定受影响的界面：不同任务的命令可以并发，服务 strand 按顺序执行并返回完整快照；保存中的任务、进行中的新增与加载各自拒绝新命令。被拒绝的命令返回 false 并发出带原因的 `commandRejected`，界面据此提示，不整体禁用。
+- 操作错误按加载、新增、具体任务分别保留并汇总显示；成功只清除相同目标的错误。更新与删除同一任务属于同一目标，其他目标的成功不能清掉尚未解决的错误。
 
 ## 验证与编辑器
 
 - 与 Modules、QObject 或 QML 注册有关的改动，验证受影响的 C++23/C++26 构建、ViewModel/QML 测试及 qmllint；涉及业务边界时检查无 Qt 构建。
-- 保持 Zed 的 clangd Modules 配置；xmake 构建自动导出根目录 `compile_commands.json`，包含标准库和命名模块的编译命令。目录或模块入口变化后确认编译数据库与 clangd 可识别新路径。
+- 保持 Zed 的 clangd Modules 配置；xmake 构建自动导出根目录 `compile_commands.json`，包含标准库和命名模块的编译命令。目录或模块入口变化后运行 `xmake check-clangd`，确认 clangd 可识别新路径；实现分区也必须参与增量依赖失效。
 - 不提交 BMI、构建产物或包含本机路径的编译数据库。验证结果区分本机检查与实际运行过的远端 CI。
 
 <!-- astrlink-debug:begin -->

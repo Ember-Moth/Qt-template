@@ -9,7 +9,8 @@ import std;
 import Template.Storage.Mmkv;
 
 using std::string;
-using std::string_view;
+// Same standard type; avoid clangd merging duplicate aliases from Asio headers and the std BMI.
+using string_view = std::basic_string_view<char>;
 using std::shared_ptr;
 using std::span;
 using std::size_t;

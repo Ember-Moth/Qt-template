@@ -86,7 +86,8 @@ src/
 │   └── task.cpp
 ├── storage/                      # Template.Storage.Mmkv：通用持久化后端
 │   ├── mmkv.cppm
-│   └── mmkv.cpp
+│   ├── mmkv.cpp
+│   └── mmkv_sdk.cppm              # 私有 SDK 实现分区
 ├── services/taskservice/          # Template.Tasks：协程业务接口
 │   ├── taskservice.cppm
 │   └── taskservice.cpp
@@ -152,6 +153,8 @@ getter 返回 `expected<optional<T>, storage::Error>`：缺失键为空 optional
 
 xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模块和标准库模块。`.clangd` 让 clangd 自建一致的 BMI。编译数据库包含本机路径，已被 Git 忽略；切换标准或目录后重新构建，再重启语言服务器。
 
+运行 `xmake check-clangd` 会先构建并刷新编译数据库，再使用当前 LLVM SDK 的 clangd 检查项目 C++ 源码与模块的解析、类型和索引诊断；不执行逐位置的重构功能自检（泛型 auto 无法展开成具体类型）。MMKV SDK 头文件保留在私有 `:sdk` 实现分区的全局模块片段，存储实现导入该分区，避免 clangd 同时解析 SDK 标准库头文件和 import std 时的类型歧义；Windows 仍保持 include-before-import。
+
 业务使用 `import std;`，按需声明 `using std::具体类型`。不使用 `using namespace std` 或假定存在 `std:vector` 等外部逐类型分区。Qt、Asio、MMKV 头文件按其工具链要求接入。
 
 [xmake/modules.lua](xmake/modules.lua) 在切换配置时清理旧模块映射，并按项目内的 `#include` 与 `import` 关系，只让依赖改动文件的 BMI 与对象失效；删除头文件或模块接口时全部失效。依赖目标的 BMI 在编译参数兼容时复用，未被导入的标准库模块（如 `std.compat`）被裁剪。生成的 BMI、构建产物和编译数据库不进入版本控制。
@@ -163,13 +166,14 @@ xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模�
 | `test_asyncmain` | 首次加载、提前退出、失败与重试、异常传播、多个功能的独立启动结果、启动取消返回空结果、装配错误异常 |
 | `test_storage` | 原生类型、空值、实例隔离、共享句柄、文件损坏保护、错误码与上下文 |
 | `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出、带上下文的错误、构造失败与约定异常 |
-| `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作、并发命令只锁定各自目标 |
-| `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态、保存中只锁定所在行并提示被拒绝的命令 |
+| `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作、并发命令只锁定各自目标、并发错误按目标保留与清除 |
+| `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态、保存中只锁定所在行并提示被拒绝的命令、其他任务成功时仍显示新增失败 |
 | `xmake lint` | 生成的 QML 类型信息与全部 QML 文件；警告使检查失败 |
+| `xmake check-clangd` | 当前配置中项目 C++ 源码、模块及 MMKV SDK 私有分区的编辑器诊断 |
 
 本机已使用 macOS ARM64、xmake 3.1.1、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：C++23/26 桌面配置各 5 项测试通过，无 Qt 配置各 3 项测试通过；qmllint、clangd 与头文件/实现变更的增量构建检查通过。
 
-[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。以上是本机验证结果；远端 CI 已在三个平台运行，C++23/26 共 6 个任务的构建、测试与 qmllint 全部通过。
+[GitHub Actions](.github/workflows/ci.yml) 配置了 Windows、macOS、Linux 的 C++23/26 桌面构建与测试，统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。`ffb7203` 的远端 CI 六个任务已通过。本次修复新增 macOS 的 clangd 检查步骤，修改后的远端 CI 需提交后重新运行，不能沿用旧提交的通过结果。
 
 ## 复用模板
 

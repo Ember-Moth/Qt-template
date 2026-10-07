@@ -14,6 +14,8 @@ using std::exception;
 using std::optional;
 using std::exception_ptr;
 using std::shared_ptr;
+using std::map;
+using std::pair;
 
 namespace {
 string utf8(const QString &text)
@@ -43,11 +45,30 @@ QString translatedError(const business::Error &error)
 struct TaskViewModel::Impl
 {
     enum class Operation { reload, add, update, remove };
+    // Updates and removals share the same task target; loading and adding have their own targets.
+    using ErrorTarget = pair<Operation, QString>;
+    map<ErrorTarget, QString> errors;
     shared_ptr<business::TaskService> service;
     explicit Impl(shared_ptr<business::TaskService> source) : service(std::move(source))
     {
         if (!service)
             throw business::Exception({business::ErrorCode::missingDependency, "TaskViewModel: a task service is required"});
+    }
+
+    void setOperationError(TaskViewModel &viewModel, Operation operation, const QString &id, QString error)
+    {
+        const auto target = ErrorTarget{operation == Operation::remove ? Operation::update : operation, id};
+        if (error.isEmpty())
+            errors.erase(target);
+        else
+            errors[target] = std::move(error);
+
+        auto message = QString{};
+        for (const auto &[key, detail] : errors) {
+            if (!message.isEmpty()) message += QLatin1Char('\n');
+            message += detail;
+        }
+        viewModel.setError(std::move(message));
     }
 
     // Commands complete with an UpdateResult; initialization may also complete empty when cancelled.
@@ -69,9 +90,12 @@ struct TaskViewModel::Impl
                     // Only unrecoverable failures throw; the committed state is unchanged.
                     try { std::rethrow_exception(failure); }
                     catch (const exception &error) {
-                        guard->setError(TaskViewModel::tr("Operation failed: %1").arg(QString::fromUtf8(error.what())));
+                        guard->m_impl->setOperationError(*guard, operation, id,
+                            TaskViewModel::tr("Operation failed: %1").arg(QString::fromUtf8(error.what())));
                     }
-                    catch (...) { guard->setError(TaskViewModel::tr("Operation failed.")); }
+                    catch (...) {
+                        guard->m_impl->setOperationError(*guard, operation, id, TaskViewModel::tr("Operation failed."));
+                    }
                 } else if (outcome && *outcome) {
                     // Every update is a full snapshot from the service strand, applied in completion order.
                     const auto &update = **outcome;
@@ -84,13 +108,13 @@ struct TaskViewModel::Impl
                         emit guard->countsChanged();
                     }
                     guard->setReady(update.ready);
-                    guard->setError({});
+                    guard->m_impl->setOperationError(*guard, operation, id, {});
                     added = operation == Operation::add && update.changed;
                 } else if (outcome) {
                     // A failed load leaves nothing usable; a failed command keeps the committed tasks.
                     if (operation == Operation::reload)
                         guard->setReady(false);
-                    guard->setError(translatedError(outcome->error()));
+                    guard->m_impl->setOperationError(*guard, operation, id, translatedError(outcome->error()));
                 }
                 // An empty outcome is a cancelled startup; async_main reports the cause at the application boundary.
                 finish(*guard, operation, id);
@@ -128,9 +152,11 @@ void TaskViewModel::initialize(Initialization initialization)
 {
     Q_ASSERT(QThread::currentThread() == thread());
     if (m_stopping || m_pending > 0 || m_ready)
-        throw business::Exception({business::ErrorCode::contractViolation, std::format(
-            "TaskViewModel::initialize: call it once on an idle ViewModel (stopping={}, pending={}, ready={})",
-            m_stopping, m_pending, m_ready)});
+        throw business::Exception({business::ErrorCode::contractViolation,
+            QStringLiteral("TaskViewModel::initialize: call it once on an idle ViewModel (stopping=%1, pending=%2, ready=%3)")
+                .arg(m_stopping ? QStringLiteral("true") : QStringLiteral("false"))
+                .arg(m_pending)
+                .arg(m_ready ? QStringLiteral("true") : QStringLiteral("false")).toStdString()});
     setLoading(true);
     changePending(1);
     asio::co_spawn(initialization.executor, std::move(initialization.result),
