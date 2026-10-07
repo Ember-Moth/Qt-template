@@ -1,6 +1,7 @@
 /build/
 /install/
 /compile_commands.json
+/.qmlls.ini
 /.cache/clangd/
 *.user
 *.user.*

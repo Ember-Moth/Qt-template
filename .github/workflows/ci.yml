@@ -24,8 +24,11 @@ jobs:
         os: [ubuntu-26.04, windows-2025-vs2026, macos-26]
         preset: [debug, debug-cxx26]
         include:
-          # The Qt-free layers build and test on their own.
+          # The Qt-free layers build and test on their own, also on Linux ARM64, which links
+          # MMKV's ARMv8 AES assembly.
           - os: ubuntu-26.04
+            preset: core
+          - os: ubuntu-26.04-arm
             preset: core
     steps:
       - uses: actions/checkout@v7
@@ -97,6 +100,15 @@ jobs:
       - name: Lint QML
         if: matrix.preset != 'core'
         run: cmake --build --preset ${{ matrix.preset }} --target lint
+      # cmake --install runs Qt's deployment script: macdeployqt, windeployqt or the Linux deployment.
+      - name: Install with Qt deployment
+        if: matrix.preset == 'debug'
+        shell: bash
+        run: |
+          cmake --install build/debug --prefix install
+          find install \( -name qt_template -o -name qt_template.exe \) -type f | grep .
+          find install \( -name 'Qt6Core*.dll' -o -name QtCore.framework -o -name 'libQt6Core.so*' \) | grep .
+          find install -type d -path '*/QtQuick/Controls' | grep .
       - name: Check clangd modules on macOS
         if: runner.os == 'macOS'
         run: cmake --build --preset ${{ matrix.preset }} --target check_clangd

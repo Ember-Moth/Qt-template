@@ -79,6 +79,8 @@ if(TEMPLATE_GUI)
     # QML types are named after their files and served flat from /qt/qml/Template/Ui, so file names
     # stay unique across src/ui. qmlcachegen compiles them ahead of time.
     file(GLOB_RECURSE qml_files CONFIGURE_DEPENDS "${SRC}/ui/*.qml")
+    # Singletons are read from `pragma Singleton`, so editing any QML file reconfigures.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${qml_files})
     foreach(qml IN LISTS qml_files)
         cmake_path(GET qml FILENAME alias)
         set_source_files_properties("${qml}" PROPERTIES QT_RESOURCE_ALIAS "${alias}")
@@ -88,12 +90,26 @@ if(TEMPLATE_GUI)
         endif()
     endforeach()
     set(QT_QML_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/qml")
+    # The first build of a tree copies .qmlls.ini next to this file, so qmlls started without a build
+    # directory, as in Zed, finds Template.Ui there; Qt Creator passes its build directory instead.
+    set(QT_QML_GENERATE_QMLLS_INI ON)
     qt_add_qml_module(template_gui URI Template.Ui VERSION 1.0 QML_FILES ${qml_files})
 
     qt_add_executable(qt_template WIN32 MACOSX_BUNDLE "${SRC}/app/main.cpp")
     template_scan_modules(qt_template)
     target_compile_definitions(qt_template PRIVATE APP_VERSION="${PROJECT_VERSION}")
     target_link_libraries(qt_template PRIVATE template_gui template_guiplugin Qt6::QuickControls2)
+    set_target_properties(qt_template PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.example.QtTemplate
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+
+    # cmake --install build/<preset> --prefix <dir>: the application plus the Qt libraries, plugins
+    # and QML modules it uses, gathered by macdeployqt, windeployqt or Qt's Linux deployment.
+    include(GNUInstallDirs)
+    install(TARGETS qt_template BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    qt_generate_deploy_qml_app_script(TARGET qt_template OUTPUT_SCRIPT deploy_script)
+    install(SCRIPT "${deploy_script}")
 
     # cmake --build --preset <name> --target lint
     add_custom_target(lint)

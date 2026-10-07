@@ -8,11 +8,12 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 
 - 源码放在 `src/`，按 `models`、`storage`、`services`、`runtime`、`viewmodels`、`ui`、`app` 分层。
 - QML 页面、组件和主题放在 `src/ui/`，统一使用 `ui` 命名。
-- `qt_add_qml_module` 以文件名作为 QML 类型名，并把文件平铺在 `/qt/qml/Template/Ui` 下，`src/ui/` 内的 QML 文件名保持唯一；单例 QML 以 `pragma Singleton` 标记，构建自动识别。
+- `qt_add_qml_module` 以文件名作为 QML 类型名，并把文件平铺在 `/qt/qml/Template/Ui` 下，`src/ui/` 内的 QML 文件名保持唯一；单例 QML 以 `pragma Singleton` 标记，构建自动识别；QML 文件是配置依赖，修改后构建会重新配置以更新 qmldir。
 - 业务与 ViewModel 模块按模块建立子目录，目录名与主接口文件名对应，例如 `models/task/{task.cppm,task.cpp}`。接口、实现及模块分区放在同一目录，允许多个实现文件。
 - `storage` 固定使用 MMKV，`runtime` 固定使用 Asio，各自直接作为模块目录：`storage/{mmkv.cppm,mmkv.cpp}`、`runtime/{asioruntime.cppm,asioruntime.cpp}`，不再嵌套后端子目录。
 - 模块的逻辑名称由 `export module` 声明决定。构建统一使用 CMake 4.4.x、Ninja 与 `CMakePresets.json`，按分层用 `CONFIGURE_DEPENDS` 自动发现 `.cppm`（模块文件集）和 `.cpp`，Qt 层同时收集 `.h`；现有分层中新增模块无需修改构建文件，额外的库依赖仍需在 `cmake/Dependencies.cmake` 中显式声明并固定 SHA-256。
 - `import std` 依赖 CMake 4.4 的实验开关，UUID 位于 `cmake/ImportStd.cmake` 且只对应 CMake 4.4.x；升级 CMake 时同步更新 UUID 与 CI 中固定的 CMake 版本。用 `qt_add_executable` 创建的目标需调用 `template_scan_modules` 开启模块扫描。
+- 发布包由 `install()` 与 `qt_generate_deploy_qml_app_script()` 生成，`cmake --install` 调用 macdeployqt、windeployqt 或 Qt 的 Linux 部署逻辑；不手写 Qt 库、插件或 QML 模块的复制规则。
 
 ## Qt 边界与 ViewModel Modules
 
@@ -64,6 +65,7 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 
 - 与 Modules、QObject 或 QML 注册有关的改动，验证受影响的 C++23/C++26 构建、ViewModel/QML 测试及 qmllint；涉及业务边界时检查无 Qt 构建。
 - 保持 Zed 的 clangd Modules 配置；CMake 在构建目录导出 `compile_commands.json`，包含标准库和命名模块的编译命令，`.clangd` 读取 `build/debug` 的数据库。目录或模块入口变化后构建 `check_clangd` 目标，确认 clangd 可识别新路径。
+- Qt Creator 从 CMake file API 在 `<构建目录>/.qtc_clangd/` 生成自己的编译数据库，不读取 `.clangd` 指定的数据库；clangd 通过环境变量 `CLANGD_FLAGS=--experimental-modules-support` 开启 Modules 支持。构建复制到仓库根目录的 `.qmlls.ini` 含本机路径，不提交。
 - Clang 默认生成精简 BMI，只保留模块引用的全局模块片段声明。导出模板在导入方实例化时按 ADL 或特化查找的全局模块片段实体，须在模块内显式引用（参见 `asyncmain.cppm` 的 `channelError`），不在使用方补 `#include` 绕过。
 - 不提交 BMI、构建产物或包含本机路径的编译数据库。验证结果区分本机检查与实际运行过的远端 CI。
 
