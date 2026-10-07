@@ -38,6 +38,9 @@ if is_plat("macosx") then
         add_rpathdirs(path.join(llvm, "lib/c++"))
     end
     set_runtimes("c++_shared")
+elseif is_plat("windows") then
+    -- Qt GUI apps use the Windows subsystem with main(); xmake adds this entry only for link.exe.
+    add_ldflags("-Wl,-entry:mainCRTStartup", {force = true})
 end
 
 includes("xmake/dependencies.lua", "xmake/qt.lua", "xmake/modules.lua", "xmake/ide.lua")
