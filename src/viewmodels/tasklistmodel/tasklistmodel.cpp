@@ -18,14 +18,31 @@ QVariant TaskListModel::data(const QModelIndex &index, int role) const
     case IdRole: return task.id;
     case TitleRole: return task.title;
     case CompletedRole: return task.completed;
+    case PendingRole: return m_pending.contains(task.id);
     default: return {};
     }
 }
 QHash<int, QByteArray> TaskListModel::roleNames() const
 {
-    return {{IdRole, "taskId"}, {TitleRole, "taskTitle"}, {CompletedRole, "completed"}};
+    return {{IdRole, "taskId"}, {TitleRole, "taskTitle"}, {CompletedRole, "completed"}, {PendingRole, "pending"}};
 }
 const QList<TaskItem> &TaskListModel::tasks() const { return m_tasks; }
+bool TaskListModel::isPending(const QString &id) const { return m_pending.contains(id); }
+void TaskListModel::setPending(const QString &id, bool pending)
+{
+    if (pending == m_pending.contains(id))
+        return;
+    if (pending)
+        m_pending.insert(id);
+    else
+        m_pending.remove(id);
+    for (int row = 0; row < m_tasks.size(); ++row) {
+        if (m_tasks.at(row).id == id) {
+            emit dataChanged(index(row), index(row), {PendingRole});
+            return;
+        }
+    }
+}
 int TaskListModel::completedCount() const
 {
     return static_cast<int>(std::count_if(m_tasks.cbegin(), m_tasks.cend(),

@@ -21,9 +21,10 @@ option_end()
 set_languages("c++" .. (get_config("cxxstd") or "23"))
 set_config("builddir", "build/xmake/cxx" .. (get_config("cxxstd") or "23"))
 set_policy("build.c++.modules", true)
-set_policy("build.c++.modules.culling", false)
--- Keep each target's BMIs tied to its own flags and selected language standard.
-set_policy("build.c++.modules.reuse", false)
+set_policy("build.c++.modules.culling", true)
+-- Share a dependency's BMIs when the module-relevant flags match; modules.lua invalidates
+-- them when the configuration or an interface changes.
+set_policy("build.c++.modules.reuse", true)
 
 -- Clang on every platform, with the C++ library of the platform's Qt SDK:
 -- libc++ on macOS, libstdc++ on Linux and the MSVC STL on Windows.
@@ -34,8 +35,11 @@ if is_plat("macosx") then
         set_toolset("ar", path.join(llvm, "bin/llvm-ar"))
         add_cxxflags("-stdlib=libc++", "-nostdinc++", {force = true})
         add_sysincludedirs(path.join(llvm, "include/c++/v1"))
-        add_linkdirs(path.join(llvm, "lib/c++"))
-        add_rpathdirs(path.join(llvm, "lib/c++"))
+        -- With --sdk the llvm toolchain adds the libc++ link and rpath directories itself.
+        if not get_config("sdk") then
+            add_linkdirs(path.join(llvm, "lib/c++"))
+            add_rpathdirs(path.join(llvm, "lib/c++"))
+        end
     end
     set_runtimes("c++_shared")
 elseif is_plat("windows") then

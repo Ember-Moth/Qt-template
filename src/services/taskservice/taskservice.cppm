@@ -8,17 +8,20 @@ export import Template.Models;
 import Template.Storage.Mmkv;
 
 using std::string;
-using std::optional;
+using std::expected;
 using std::shared_ptr;
 
 export namespace business {
+// The committed tasks after an operation; changed is false when it left them as they were.
 struct Update
 {
     Tasks tasks;
     bool ready = false;
     bool changed = false;
-    optional<Error> error;
 };
+// A failed operation keeps the committed state. Construction failures and calls from another
+// executor throw Exception instead.
+using UpdateResult = expected<Update, Error>;
 
 class TaskService
 {
@@ -29,10 +32,10 @@ public:
     TaskService &operator=(const TaskService &) = delete;
 
     auto executor() const -> asio::any_io_executor;
-    auto reload() -> asio::awaitable<Update>;
-    auto addTask(string title) -> asio::awaitable<Update>;
-    auto setTaskCompleted(string id, bool completed) -> asio::awaitable<Update>;
-    auto removeTask(string id) -> asio::awaitable<Update>;
+    auto reload() -> asio::awaitable<UpdateResult>;
+    auto addTask(string title) -> asio::awaitable<UpdateResult>;
+    auto setTaskCompleted(string id, bool completed) -> asio::awaitable<UpdateResult>;
+    auto removeTask(string id) -> asio::awaitable<UpdateResult>;
 
 private:
     struct Impl;

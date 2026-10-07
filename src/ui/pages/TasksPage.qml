@@ -22,6 +22,10 @@ Page {
             taskInput.clear();
             taskInput.forceActiveFocus();
         }
+        function onCommandRejected(reason: string): void {
+            rejectionNotice.text = reason;
+            rejectionTimer.restart();
+        }
     }
 
     ColumnLayout {
@@ -51,7 +55,8 @@ Page {
 
                 Layout.fillWidth: true
                 placeholderText: qsTr("What would you like to do?")
-                enabled: page.viewModel.ready && !page.viewModel.busy
+                // Locked only while loading or while its own add is saved; other rows stay usable.
+                enabled: page.viewModel.ready && !page.viewModel.loading && !page.viewModel.adding
                 selectByMouse: true
                 onAccepted: page.submitTask()
                 Accessible.name: qsTr("New task")
@@ -61,7 +66,8 @@ Page {
                 objectName: "addTaskButton"
                 text: qsTr("Add task")
                 highlighted: true
-                enabled: page.viewModel.ready && !page.viewModel.busy && taskInput.text.trim().length > 0
+                enabled: page.viewModel.ready && !page.viewModel.loading && !page.viewModel.adding
+                    && taskInput.text.trim().length > 0
                 onClicked: page.submitTask()
             }
 
@@ -70,6 +76,22 @@ Page {
                 Layout.preferredHeight: 32
                 visible: page.viewModel.busy
                 running: page.viewModel.busy
+            }
+        }
+
+        Label {
+            id: rejectionNotice
+            objectName: "rejectionNotice"
+
+            Layout.fillWidth: true
+            visible: rejectionTimer.running
+            wrapMode: Text.Wrap
+            color: page.palette.placeholderText
+            Accessible.role: Accessible.AlertMessage
+
+            Timer {
+                id: rejectionTimer
+                interval: 4000
             }
         }
 
@@ -110,7 +132,7 @@ Page {
 
             delegate: TaskDelegate {
                 width: taskList.width
-                enabled: page.viewModel.ready && !page.viewModel.busy
+                enabled: page.viewModel.ready && !page.viewModel.loading
                 onCompletionRequested: (taskId, completed) =>
                     page.viewModel.setTaskCompleted(taskId, completed)
                 onRemovalRequested: taskId => page.viewModel.removeTask(taskId)

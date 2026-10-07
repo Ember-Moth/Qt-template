@@ -9,6 +9,8 @@ Frame {
     required property string taskId
     required property string taskTitle
     required property bool completed
+    // A change to this task is being saved; only this row waits for it.
+    required property bool pending
 
     signal completionRequested(string taskId, bool completed)
     signal removalRequested(string taskId)
@@ -29,6 +31,7 @@ Frame {
                 return taskDelegate.completed ? Qt.Checked : Qt.Unchecked;
             }
             checked: taskDelegate.completed
+            enabled: !taskDelegate.pending
             Accessible.name: qsTr("Complete task: %1").arg(taskDelegate.taskTitle)
         }
 
@@ -44,6 +47,7 @@ Frame {
             objectName: "removeTaskButton"
             text: qsTr("Remove")
             flat: true
+            enabled: !taskDelegate.pending
             onClicked: taskDelegate.removalRequested(taskDelegate.taskId)
             Accessible.name: qsTr("Remove task: %1").arg(taskDelegate.taskTitle)
         }

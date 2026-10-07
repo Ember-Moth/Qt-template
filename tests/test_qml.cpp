@@ -96,6 +96,45 @@ void QmlTest::viewCommandsAndSaveFailure()
     QVERIFY2(warnings.isEmpty(), warnings.isEmpty() ? "" : qPrintable(warnings.first().toString()));
 }
 
+void QmlTest::pendingTaskLocksOnlyItsRow()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    ApplicationContext context(directory.filePath("mmkv"));
+    auto &viewModel = *context.tasks();
+    QQmlApplicationEngine engine;
+    QList<QQmlError> warnings;
+    connect(&engine, &QQmlEngine::warnings, this, [&warnings](const auto &errors) { warnings.append(errors); });
+    engine.setInitialProperties({{"appContext", QVariant::fromValue(&context)}});
+    engine.loadFromModule("Template.Ui", "Main");
+    QCOMPARE(engine.rootObjects().size(), 1);
+    QVERIFY(context.start());
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    QVERIFY(window);
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+    QTRY_VERIFY(viewModel.ready() && !viewModel.busy());
+    QVERIFY(viewModel.addTask("Saved on its own"));
+    QTRY_VERIFY(!viewModel.busy());
+    QTRY_VERIFY(findItem(window->contentItem(), "completionCheckBox"));
+    auto *checkBox = findItem(window->contentItem(), "completionCheckBox");
+    auto *input = findItem(window->contentItem(), "taskInput");
+    auto *notice = findItem(window->contentItem(), "rejectionNotice");
+    QVERIFY(checkBox && input && notice);
+    QVERIFY(!notice->isVisible());
+    const auto id = viewModel.tasks()->tasks().at(0).id;
+    // Both commands run before the first save can report back on this thread.
+    QVERIFY(viewModel.setTaskCompleted(id, true));
+    QVERIFY(!checkBox->isEnabled());
+    QVERIFY(input->isEnabled());
+    QVERIFY(!viewModel.setTaskCompleted(id, false));
+    QVERIFY(notice->isVisible());
+    QVERIFY(!notice->property("text").toString().isEmpty());
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(checkBox->isEnabled());
+    QVERIFY(checkBox->property("checked").toBool());
+    QVERIFY2(warnings.isEmpty(), warnings.isEmpty() ? "" : qPrintable(warnings.first().toString()));
+}
+
 void QmlTest::viewRequiresInjectedContext()
 {
     QQmlEngine engine;

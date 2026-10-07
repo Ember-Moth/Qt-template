@@ -8,6 +8,7 @@ module Template.Storage.Mmkv;
 import std;
 
 using std::string;
+using std::string_view;
 using std::vector;
 using std::span;
 using std::expected;
@@ -71,24 +72,27 @@ auto registry() -> StoreRegistry &
     return instance;
 }
 
+// Failures carry the reason and file name; the store adds the operation and location.
 auto validateStore(const std::filesystem::path &directory, const string &identifier) -> Result<void>
 {
     const auto data = directory / identifier;
     const auto metadata = directory / (identifier + ".crc");
+    const auto dataName = identifier, metadataName = identifier + ".crc";
     auto error = error_code{};
     const auto dataExists = std::filesystem::exists(data, error);
-    if (error) return std::unexpected(storageError(error.message()));
+    if (error) return std::unexpected(storageError(std::format("cannot inspect data file '{}': {}", dataName, error.message())));
     const auto metadataExists = std::filesystem::exists(metadata, error);
-    if (error) return std::unexpected(storageError(error.message()));
+    if (error) return std::unexpected(storageError(std::format("cannot inspect metadata file '{}': {}", metadataName, error.message())));
     if (!dataExists && !metadataExists) return {};
     if (!dataExists || !metadataExists)
-        return std::unexpected(formatError("An MMKV data or metadata file is missing."));
+        return std::unexpected(formatError(std::format("{} file '{}' is missing while '{}' exists",
+            dataExists ? "metadata" : "data", dataExists ? metadataName : dataName, dataExists ? dataName : metadataName)));
     if (!std::filesystem::is_regular_file(data, error) || error
         || !std::filesystem::is_regular_file(metadata, error) || error)
-        return std::unexpected(formatError("Invalid MMKV storage files."));
+        return std::unexpected(formatError(std::format("'{}' and '{}' must be regular files", dataName, metadataName)));
     if (std::filesystem::file_size(data, error) < sizeof(uint32_t) || error
         || std::filesystem::file_size(metadata, error) < sizeof(mmkv::MMKVMetaInfo) || error)
-        return std::unexpected(formatError("Truncated MMKV storage files."));
+        return std::unexpected(formatError(std::format("'{}' or '{}' is truncated", dataName, metadataName)));
     // MMKV 2.x keeps actualSize in metadata; its legacy static validator reads the old header.
     auto metadataFile = ifstream{metadata, std::ios::binary};
     auto info = mmkv::MMKVMetaInfo{};
@@ -97,19 +101,26 @@ auto validateStore(const std::filesystem::path &directory, const string &identif
     auto legacySize = uint32_t{};
     dataFile.read(reinterpret_cast<char *>(&legacySize), sizeof(legacySize));
     if (!metadataFile || !dataFile)
-        return std::unexpected(storageError("Cannot read MMKV storage files."));
+        return std::unexpected(storageError(std::format("cannot read the headers of '{}' and '{}'", dataName, metadataName)));
     if (info.m_version > mmkv::MMKVVersionFlag)
-        return std::unexpected(formatError("Unsupported MMKV metadata version."));
+        return std::unexpected(formatError(std::format("metadata version {} in '{}' is newer than supported version {}",
+            static_cast<uint32_t>(info.m_version), metadataName, static_cast<uint32_t>(mmkv::MMKVVersionFlag))));
     const auto size = info.m_version >= mmkv::MMKVVersionActualSize ? info.m_actualSize : legacySize;
-    if (size > std::filesystem::file_size(data, error) - sizeof(legacySize) || error)
-        return std::unexpected(formatError("Invalid MMKV data length."));
+    const auto available = std::filesystem::file_size(data, error) - sizeof(legacySize);
+    if (size > available || error)
+        return std::unexpected(formatError(std::format("payload length {} exceeds the {} bytes in '{}'", size, available, dataName)));
     auto bytes = string(size, '\0');
     dataFile.read(bytes.data(), static_cast<streamsize>(bytes.size()));
-    if (!dataFile) return std::unexpected(storageError("Cannot read MMKV payload."));
+    if (!dataFile) return std::unexpected(storageError(std::format("cannot read the {}-byte payload of '{}'", size, dataName)));
     // Reject corruption before opening: MMKV's default recovery can discard data.
     if (CRC32(0, reinterpret_cast<const uint8_t *>(bytes.data()), size) != info.m_crcDigest)
-        return std::unexpected(formatError("MMKV checksum validation failed."));
+        return std::unexpected(formatError(std::format("checksum of '{}' does not match '{}'; the data is corrupted", dataName, metadataName)));
     return {};
+}
+auto display(const std::filesystem::path &path) -> string
+{
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
 }
 
 auto stamp(const std::filesystem::path &file) -> optional<FileStamp>
@@ -156,6 +167,25 @@ struct MmkvStore::Impl
         }
     }
 
+    // Prefix a reason with the operation and the store it ran on.
+    auto failure(Error error, string_view action) const -> Error
+    {
+        error.detail = std::format("{} MMKV store '{}' in '{}': {}", action, identifier, display(directory), error.detail);
+        return error;
+    }
+    // MMKV reports some I/O failures by throwing; they are recoverable, unlike running out of memory.
+    template <class T, class Call>
+    static auto guarded(Call call) -> Result<T>
+    {
+        try {
+            return call();
+        } catch (const std::bad_alloc &) {
+            throw;
+        } catch (const std::exception &error) {
+            return std::unexpected(storageError(std::format("MMKV raised: {}", error.what())));
+        }
+    }
+
     auto open() const -> Result<void>
     {
         if (store) return {};
@@ -165,36 +195,44 @@ struct MmkvStore::Impl
                 return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
                     || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
             }))
-            return std::unexpected(Error{ErrorCode::invalidIdentifier, "Use a non-empty portable MMKV instance ID."});
+            return std::unexpected(Error{ErrorCode::invalidIdentifier,
+                "the instance ID must be non-empty and use only ASCII letters, digits, '_', '-' and '.'"});
         auto error = error_code{};
         if (!readOnly) std::filesystem::create_directories(directory, error);
-        if (error) return std::unexpected(storageError(error.message()));
+        if (error) return std::unexpected(storageError(std::format("cannot create the directory: {}", error.message())));
         canonical = std::filesystem::canonical(directory, error);
-        if (error) return std::unexpected(storageError(error.message()));
+        if (error) return std::unexpected(storageError(std::format("cannot resolve the directory: {}", error.message())));
         const auto native = canonical.native();
         auto &pool = registry();
         const auto lock = scoped_lock(pool.gate);
-        std::call_once(pool.initialization, [&] {
-            MMKV::initializeMMKV(native, MMKVLogError);
-            pool.initialized = true;
-        });
+        if (auto initialized = guarded<void>([&] -> Result<void> {
+                std::call_once(pool.initialization, [&] {
+                    MMKV::initializeMMKV(native, MMKVLogError);
+                    pool.initialized = true;
+                });
+                return {};
+            }); !initialized)
+            return initialized;
         if (const auto found = pool.stores.find(StoreKey{canonical, identifier}); found != pool.stores.end()) {
             if (found->second.readOnly != readOnly)
-                return std::unexpected(storageError("The store is already open in a different access mode."));
+                return std::unexpected(storageError(std::format("the store is already open {}",
+                    found->second.readOnly ? "read-only" : "for writing")));
             ++found->second.references;
             store = found->second.store;
             operations = found->second.operations;
             return {};
         }
         if (readOnly && !std::filesystem::exists(canonical / identifier, error))
-            return std::unexpected(storageError("The read-only MMKV store does not exist."));
-        if (error) return std::unexpected(storageError(error.message()));
+            return std::unexpected(storageError("a read-only store must already exist"));
+        if (error) return std::unexpected(storageError(std::format("cannot inspect the data file: {}", error.message())));
         if (auto valid = validateStore(canonical, identifier); !valid) return valid;
         auto config = MMKVConfig{};
         config.mode = readOnly ? MMKV_SINGLE_PROCESS | MMKV_READ_ONLY : MMKV_SINGLE_PROCESS;
         config.rootPath = &native;
-        store = MMKV::mmkvWithID(identifier, config);
-        if (!store) return std::unexpected(storageError("Cannot open the MMKV store."));
+        auto opened = guarded<MMKV *>([&] -> Result<MMKV *> { return MMKV::mmkvWithID(identifier, config); });
+        if (!opened) return std::unexpected(opened.error());
+        if (!*opened) return std::unexpected(storageError("MMKV could not open the instance"));
+        store = *opened;
         operations = std::make_shared<Operations>();
         pool.stores.emplace(StoreKey{canonical, identifier}, StoreEntry{store, 1, readOnly, operations});
         return {};
@@ -206,42 +244,51 @@ struct MmkvStore::Impl
         if (operations->verified && operations->verified == fingerprint(canonical, identifier)) return {};
         auto error = error_code{};
         if (!std::filesystem::is_directory(canonical, error) || error)
-            return std::unexpected(storageError("The MMKV directory is unavailable."));
+            return std::unexpected(storageError("the directory is no longer available"));
         return validateStore(canonical, identifier);
     }
 
     template <class T, class Operation>
-    auto access(Operation operation, bool writing = false) const -> Result<T>
+    auto access(string_view action, Operation operation, bool writing = false) const -> Result<T>
     {
         const auto lock = scoped_lock(gate);
         if (writing && readOnly)
-            return std::unexpected(storageError("The MMKV store is read-only."));
-        if (auto opened = open(); !opened) return std::unexpected(opened.error());
+            return std::unexpected(failure(storageError("the store is open read-only"), action));
+        if (auto opened = open(); !opened) return std::unexpected(failure(opened.error(), action));
         const auto serialized = scoped_lock(operations->gate);
-        if (auto valid = validate(); !valid) return std::unexpected(valid.error());
-        auto result = operation(*store);
+        if (auto valid = validate(); !valid) return std::unexpected(failure(valid.error(), action));
+        auto result = guarded<T>([&] { return operation(*store); });
         // MMKV's own changes are trusted; outside edits show a new size or modification time.
         operations->verified = fingerprint(canonical, identifier);
+        if (!result) return std::unexpected(failure(std::move(result).error(), action));
         return result;
+    }
+    auto keyed(string_view key, string_view action) const -> Result<void>
+    {
+        if (key.empty()) return std::unexpected(failure(Error{ErrorCode::invalidKey, "the key is empty"}, action));
+        return {};
     }
     template <class T, class Getter>
     auto read(std::string_view key, Getter getter) const -> Result<std::optional<T>>
     {
-        if (key.empty()) return std::unexpected(Error{ErrorCode::invalidKey, "An MMKV key is required."});
-        return access<std::optional<T>>([&](MMKV &handle) -> Result<std::optional<T>> {
+        const auto action = std::format("read '{}' from", key);
+        if (auto valid = keyed(key, action); !valid) return std::unexpected(valid.error());
+        return access<std::optional<T>>(action, [&](MMKV &handle) -> Result<std::optional<T>> {
             if (!handle.containsKey(key)) return std::nullopt;
             T value{};
             if (!getter(handle, key, value))
-                return std::unexpected(formatError("Cannot decode the MMKV value using the requested type."));
+                return std::unexpected(formatError("the stored value has a different type"));
             return std::optional<T>{std::move(value)};
         });
     }
     template <class Setter>
-    auto write(std::string_view key, Setter setter) const -> Result<void>
+    auto write(std::string_view key, Setter setter, string_view verb = "write", string_view preposition = "to") const
+        -> Result<void>
     {
-        if (key.empty()) return std::unexpected(Error{ErrorCode::invalidKey, "An MMKV key is required."});
-        return access<void>([&](MMKV &handle) -> Result<void> {
-            if (!setter(handle, key)) return std::unexpected(storageError("MMKV could not save the value."));
+        const auto action = std::format("{} '{}' {}", verb, key, preposition);
+        if (auto valid = keyed(key, action); !valid) return valid;
+        return access<void>(action, [&](MMKV &handle) -> Result<void> {
+            if (!setter(handle, key)) return std::unexpected(storageError("MMKV rejected the change"));
             // set/remove report success; sync() itself provides no durability result.
             handle.sync(MMKV_SYNC);
             return {};
@@ -339,25 +386,26 @@ auto MmkvStore::setBytes(std::string_view key, span<const std::byte> value) cons
 }
 auto MmkvStore::contains(std::string_view key) const -> Result<bool>
 {
-    if (key.empty()) return std::unexpected(Error{ErrorCode::invalidKey, "An MMKV key is required."});
-    return m_impl->access<bool>([key](MMKV &handle) -> Result<bool> { return handle.containsKey(key); });
+    const auto action = std::format("look up '{}' in", key);
+    if (auto valid = m_impl->keyed(key, action); !valid) return std::unexpected(valid.error());
+    return m_impl->access<bool>(action, [key](MMKV &handle) -> Result<bool> { return handle.containsKey(key); });
 }
 auto MmkvStore::keys() const -> Result<Strings>
 {
-    return m_impl->access<Strings>([](MMKV &handle) -> Result<Strings> { return handle.allKeys(); });
+    return m_impl->access<Strings>("list the keys of", [](MMKV &handle) -> Result<Strings> { return handle.allKeys(); });
 }
 auto MmkvStore::remove(std::string_view key) const -> Result<void>
 {
     return m_impl->write(key, [](MMKV &handle, auto key) {
         return !handle.containsKey(key) || handle.removeValueForKey(key);
-    });
+    }, "remove", "from");
 }
 auto MmkvStore::clear() const -> Result<void>
 {
-    return m_impl->access<void>([](MMKV &handle) -> Result<void> {
+    return m_impl->access<void>("clear", [](MMKV &handle) -> Result<void> {
         handle.clearAll();
         handle.sync(MMKV_SYNC);
-        if (handle.count() != 0) return std::unexpected(storageError("MMKV could not clear the store."));
+        if (handle.count() != 0) return std::unexpected(storageError("keys remain after clearing"));
         return {};
     }, true);
 }

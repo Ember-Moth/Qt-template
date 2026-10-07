@@ -47,10 +47,12 @@ xmake lint
 xmake run qt_template
 ```
 
-已有工具链配置下，切换桌面 C++26：
+切换配置时写出全部选项：`xmake f` 只要带选项就不沿用上次的配置，未写出的模式、工具链、SDK 与 Qt 会回到默认值（release 模式、不指定 LLVM SDK），`xmake clean -a` 也会删除配置。以下命令沿用上文的 `LLVM_ROOT` 与 `QT_ROOT`，Windows 改用 `$env:LLVM_ROOT` 与 `$env:QT_ROOT`。
+
+切换桌面 C++26：
 
 ```sh
-xmake f --gui=y --tests=y --cxxstd=26 --builddir=build/xmake/cxx26
+xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=26 --builddir=build/xmake/cxx26
 xmake build qt_template
 xmake test
 xmake lint
@@ -59,7 +61,7 @@ xmake lint
 单独构建和测试无 Qt 部分，包含业务与应用级协程入口：
 
 ```sh
-xmake f --gui=n --tests=y --cxxstd=23 --builddir=build/xmake/business
+xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=n --tests=y --cxxstd=23 --builddir=build/xmake/business
 xmake build template_core
 xmake test
 ```
@@ -67,7 +69,7 @@ xmake test
 恢复桌面 C++23：
 
 ```sh
-xmake f --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
+xmake f -y -m debug --toolchain=llvm --sdk="$LLVM_ROOT" --qt="$QT_ROOT" --gui=y --tests=y --cxxstd=23 --builddir=build/xmake/cxx23
 xmake build qt_template
 ```
 
@@ -108,7 +110,7 @@ src/
 
 业务、ViewModel 和应用模块按模块建立子目录。`storage` 与 `runtime` 直接作为各自唯一后端的模块目录。接口、实现和可选分区放在同一目录，模块可以包含多个实现文件。
 
-xmake 自动发现既有分层下的 `.cppm`、`.cpp`，Qt 层同时发现 `.h`，QML 资源自动收集。模块的逻辑名称由 `export module` 决定。新增文件不需要逐个登记；额外库依赖仍需显式声明。QML 类型和依赖装配按[扩展步骤](docs/architecture.md#扩展业务与-viewmodel)更新。
+xmake 自动发现既有分层下的 `.cppm`、`.cpp`，Qt 层同时发现 `.h`，QML 资源自动收集，并由 qmlcachegen 预先编译为 C++ 随 `template_gui` 链接，运行时不再解析 QML 源码。模块的逻辑名称由 `export module` 决定。新增文件不需要逐个登记；额外库依赖仍需显式声明。QML 类型和依赖装配按[扩展步骤](docs/architecture.md#扩展业务与-viewmodel)更新。
 
 | 目标 | 内容 |
 | --- | --- |
@@ -122,11 +124,15 @@ xmake 自动发现既有分层下的 `.cppm`、`.cpp`，Qt 层同时发现 `.h`�
 
 `ApplicationContext` 构造时装配运行时、存储、服务、Lifecycle 和 ViewModel。main 加载 QML 后调用 `context.start()`，再运行 Qt 的 `app.exec()`。
 
-`async_main(Dependencies)` 在公共 Asio 运行时上执行，在每个服务自己的执行器上 `co_spawn` 并 `co_await` 初始化。Lifecycle 交付启动结果后，根协程等待退出通知。ViewModel 构造时不自动加载；`initialize()` 接收结果，在 GUI 线程更新列表、ready、busy 和错误信息。独立使用 ViewModel 时显式调用 `reload()`。
+`async_main(Dependencies)` 在公共 Asio 运行时上执行，按顺序运行启动步骤：每一步在服务自己的执行器上 `co_spawn` 并 `co_await` 加载，再交付给该功能登记的 `Startup<Result>`，随后根协程等待退出通知。ApplicationContext 用一行 `attach(viewModel, service, &Service::operation)` 为每个功能接线，新增功能无需修改 `app/asyncmain`。ViewModel 构造时不自动加载；`initialize()` 接收结果，在 GUI 线程更新列表、ready、busy 和错误信息。独立使用 ViewModel 时显式调用 `reload()`。
 
-QML 类型注册在 `ui/qmltypes.h`，实例由 ApplicationContext 持有。main 只注入 `appContext`；根组件将 `appContext.tasks` 传给页面，页面通过 `required property TaskViewModel viewModel` 声明依赖。
+QML 类型注册在 `ui/qmltypes.h`，实例由 ApplicationContext 持有。main 只注入 `appContext`；根组件将 `appContext.tasks` 传给页面，页面通过 `required property TaskViewModel viewModel` 声明依赖。保存期间只锁定受影响的任务行或新增输入，其余界面保持可用；被拒绝的命令通过 `commandRejected` 在页面上短暂提示原因。
 
 退出时 `aboutToQuit` 调用 `context.stop()`，拒绝新的界面命令并通知根协程。析构再次请求停止，调用 `finish()` 排空已接受操作并等待线程结束，再释放成员。清理不等待 GUI 回调，Qt 事件循环结束后仍能完成。示例使用有限操作；接入持续 I/O 时，所属业务需在退出请求到达后取消操作，并在根协程返回前等待清理完成。
+
+## 错误处理
+
+可恢复的失败通过 `std::expected` 返回，错误码为各层的 `enum class ErrorCode`，错误信息按 `<上下文>: <原因>` 由外向内带上操作、任务 ID、键与 MMKV 实例。只有构造失败和违反使用约定时抛出 `business::Exception` 或 `application::Exception`；退出导致的启动取消返回空结果。规则见 [AGENTS.md](AGENTS.md#错误处理)，设计见[架构文档](docs/architecture.md#错误处理)。
 
 ## 持久化
 
@@ -148,17 +154,17 @@ xmake 构建后自动导出根目录 `compile_commands.json`，覆盖命名模�
 
 业务使用 `import std;`，按需声明 `using std::具体类型`。不使用 `using namespace std` 或假定存在 `std:vector` 等外部逐类型分区。Qt、Asio、MMKV 头文件按其工具链要求接入。
 
-[xmake/modules.lua](xmake/modules.lua) 在切换配置时清理旧模块映射，并跟踪项目源码和头文件。接口变化使项目 BMI 与对象失效，实现变化使对应对象失效，标准库 BMI 可复用。生成的 BMI、构建产物和编译数据库不进入版本控制。
+[xmake/modules.lua](xmake/modules.lua) 在切换配置时清理旧模块映射，并按项目内的 `#include` 与 `import` 关系，只让依赖改动文件的 BMI 与对象失效；删除头文件或模块接口时全部失效。依赖目标的 BMI 在编译参数兼容时复用，未被导入的标准库模块（如 `std.compat`）被裁剪。生成的 BMI、构建产物和编译数据库不进入版本控制。
 
 ## 验证
 
 | 检查 | 覆盖 |
 | --- | --- |
-| `test_asyncmain` | 首次加载、提前退出、失败与重试、异常传播 |
-| `test_storage` | 原生类型、空值、实例隔离、共享句柄、文件损坏保护 |
-| `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出 |
-| `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作 |
-| `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态 |
+| `test_asyncmain` | 首次加载、提前退出、失败与重试、异常传播、多个功能的独立启动结果、启动取消返回空结果、装配错误异常 |
+| `test_storage` | 原生类型、空值、实例隔离、共享句柄、文件损坏保护、错误码与上下文 |
+| `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出、带上下文的错误、构造失败与约定异常 |
+| `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作、并发命令只锁定各自目标 |
+| `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态、保存中只锁定所在行并提示被拒绝的命令 |
 | `xmake lint` | 生成的 QML 类型信息与全部 QML 文件；警告使检查失败 |
 
 本机已使用 macOS ARM64、xmake 3.1.1、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：C++23/26 桌面配置各 5 项测试通过，无 Qt 配置各 3 项测试通过；qmllint、clangd 与头文件/实现变更的增量构建检查通过。

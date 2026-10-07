@@ -30,6 +30,11 @@ auto readFile(const std::filesystem::path &path)
     require(file.is_open());
     return string{std::istreambuf_iterator<char>{file}, {}};
 }
+template <class T>
+bool failsWith(const storage::Result<T> &result, storage::ErrorCode code, string_view context)
+{
+    return !result && result.error().code == code && result.error().detail.find(context) != string::npos;
+}
 void writeFile(const std::filesystem::path &path, string_view content)
 {
     auto file = ofstream(path, std::ios::binary | std::ios::trunc);
@@ -67,7 +72,8 @@ void typedValues()
         require(store.getString("empty")->has_value() && store.getString("empty")->value().empty());
         require(store.getBytes("emptyBytes")->has_value() && store.getBytes("emptyBytes")->value().empty());
         require(store.getStrings("emptyList")->has_value() && store.getStrings("emptyList")->value().empty());
-        require(!store.setString("", "invalid") && !store.getString(""));
+        require(failsWith(store.setString("", "invalid"), storage::ErrorCode::invalidKey, "MMKV store 'app'"));
+        require(failsWith(store.getString(""), storage::ErrorCode::invalidKey, "the key is empty"));
         require(!store.remove("") && !store.contains(""));
     }
     {
@@ -85,7 +91,9 @@ void typedValues()
     {
         storage::MmkvStore readOnly(root, "app", true);
         require(readOnly.getStrings("list")->value() == strings);
-        require(!readOnly.setBool("enabled", true) && !readOnly.remove("list") && !readOnly.clear());
+        require(failsWith(readOnly.setBool("enabled", true), storage::ErrorCode::io, "write 'enabled' to MMKV store 'app'"));
+        require(failsWith(readOnly.remove("list"), storage::ErrorCode::io, "open read-only"));
+        require(!readOnly.clear());
         require(!readOnly.getBool("enabled")->value());
     }
     {
@@ -93,7 +101,7 @@ void typedValues()
         require(store.clear().has_value() && store.keys()->empty());
         require(!store.getBytes("bytes")->has_value());
     }
-    require(!storage::MmkvStore(root, "../outside").keys());
+    require(failsWith(storage::MmkvStore(root, "../outside").keys(), storage::ErrorCode::invalidIdentifier, "instance ID"));
     require(!storage::MmkvStore(root, "").keys());
 }
 void instances()
@@ -153,7 +161,8 @@ void corruptedStore()
     writeFile(dataPath, corrupted);
     {
         storage::MmkvStore store(directory.path, "settings");
-        require(!store.getString("name") && !store.setString("name", "Overwrite"));
+        require(failsWith(store.getString("name"), storage::ErrorCode::invalidFormat, "checksum of 'settings'"));
+        require(!store.setString("name", "Overwrite"));
         require(readFile(dataPath) == corrupted && readFile(metadataPath) == metadata);
     }
     writeFile(dataPath, original);

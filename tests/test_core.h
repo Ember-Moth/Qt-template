@@ -10,5 +10,6 @@ private slots:
     void applicationStartupAndStop();
     void commandsAndModelNotifications();
     void validationAndSaveFailure();
+    void concurrentCommandsLockOnlyTheirTargets();
     void loadRecoveryAndDestruction();
 };

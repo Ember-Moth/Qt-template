@@ -35,9 +35,46 @@ rule("template.qml")
             if #foreign > 0 then table.insert(args, "--foreign-types=" .. table.concat(foreign, ",")) end
             table.insert(args, metatypes)
             os.vrunv(registrar, args)
-            io.writefile(generated, io.readfile(generated) .. '\n#include <QResource>\nvoid initializeTemplateUi() { Q_INIT_RESOURCE(template_ui); }\n')
+            -- Referencing both resources keeps the QML files and compiled units in the static library link.
+            io.writefile(generated, io.readfile(generated) .. '\n#include <QResource>\nvoid initializeTemplateUi()\n{\n'
+                .. '    Q_INIT_RESOURCE(template_ui);\n    Q_INIT_RESOURCE(qmlcache_template_ui);\n}\n')
             compiler.compile(generated, object, {target = target})
         end, {dependfile = target:dependfile(object), files = table.join(headers, jsonfiles, {path.join(os.projectdir(), "xmake/qt.lua")}),
             changed = target:is_rebuilt(), lastmtime = os.mtime(object)})
+
+        -- Compile QML ahead of time like qt_add_qml_module: one C++ unit per file, plus a loader
+        -- that hands those units to the engine for their qrc paths. Runs after plugin.qmltypes exists.
+        local cachegen = assert(find_file(is_host("windows") and "qmlcachegen.exe" or "qmlcachegen",
+            {qt.libexecdir, qt.bindir}), "qmlcachegen not found")
+        local qrc = target:data("template.qml.qrc")
+        local qmldir = path.join(directory, "qmldir")
+        local qmltypes = path.join(directory, "plugin.qmltypes")
+        local cachedir = path.join(target:autogendir(), "qmlcache")
+        local function cachegen_file(output, inputs, args)
+            local cacheobject = target:objectfile(output)
+            table.insert(target:objectfiles(), cacheobject)
+            depend.on_changed(function()
+                os.vrunv(cachegen, table.join(args, {"-o", output}))
+                compiler.compile(output, cacheobject, {target = target})
+            end, {dependfile = target:dependfile(cacheobject),
+                files = table.join(inputs, {cachegen, qrc, path.join(os.projectdir(), "xmake/qt.lua")}),
+                changed = target:is_rebuilt(), lastmtime = os.mtime(cacheobject)})
+        end
+        os.mkdir(cachedir)
+        local resources = {"--resource", qrc}
+        for _, qml in ipairs(target:data("template.qml.files")) do
+            table.insert(resources, qml.resource)
+            cachegen_file(path.join(cachedir, path.basename(qml.source) .. "_qml.cpp"), {qml.source, qmldir, qmltypes},
+                {"--bare", "--resource-path", qml.resource, "-I", path.directory(path.directory(directory)),
+                 "-I", qt.qmldir, "-i", qmldir, "--resource", qrc, qml.source})
+        end
+        local list = path.join(cachedir, "template_ui_qml_loader_file_list.rsp")
+        local content = table.concat(resources, "\n") .. "\n"
+        if not os.isfile(list) or io.readfile(list) ~= content then
+            io.writefile(list, content)
+        end
+        -- qmlcachegen writes a loader when the output name ends in qmlcache_loader.cpp.
+        cachegen_file(path.join(cachedir, "template_ui_qmlcache_loader.cpp"), {list},
+            {"--resource-name", "qmlcache_template_ui", "@" .. list})
     end)
 rule_end()

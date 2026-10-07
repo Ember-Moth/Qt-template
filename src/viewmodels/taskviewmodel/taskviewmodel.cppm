@@ -17,7 +17,8 @@ struct TaskViewModel::Dependencies
 struct TaskViewModel::Initialization
 {
     asio::any_io_executor executor;
-    asio::awaitable<business::Update> result;
+    // Empty when the application stopped or failed before the startup result arrived.
+    asio::awaitable<std::optional<business::UpdateResult>> result;
 };
 }
 

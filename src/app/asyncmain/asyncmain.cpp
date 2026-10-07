@@ -1,71 +1,83 @@
 module;
-#include <asio/co_spawn.hpp>
 #include <asio/experimental/concurrent_channel.hpp>
 #include <asio/use_awaitable.hpp>
 
 module Template.App.AsyncMain;
 import std;
 
-using std::shared_ptr;
+using std::function;
+using std::vector;
+using std::mutex;
+using std::scoped_lock;
 using std::atomic_bool;
-using std::invalid_argument;
-using std::logic_error;
 
 namespace application {
 struct Lifecycle::Impl
 {
-    using Startup = asio::experimental::concurrent_channel<void(asio::error_code, business::Update)>;
     using Shutdown = asio::experimental::concurrent_channel<void(asio::error_code)>;
-    Startup started;
+    asio::any_io_executor executor;
     Shutdown stopping;
     atomic_bool stopRequested = false;
     atomic_bool running = false;
+    mutex gate;
+    vector<function<void()>> startups;
 
-    explicit Impl(asio::any_io_executor executor) : started(executor, 1), stopping(executor, 1) {}
-    static auto receive(shared_ptr<Impl> state) -> asio::awaitable<business::Update>
+    explicit Impl(asio::any_io_executor target) : executor(target), stopping(target, 1) {}
+    void cancelStartups()
     {
-        co_return co_await state->started.async_receive(asio::use_awaitable);
+        auto cancels = vector<function<void()>>{};
+        {
+            const auto lock = scoped_lock(gate);
+            cancels = startups;
+        }
+        for (const auto &cancel : cancels)
+            cancel();
     }
 };
 
 Lifecycle::Lifecycle(asio::any_io_executor executor)
 {
-    if (!executor) throw invalid_argument("An application executor is required.");
+    if (!executor) throw Exception({ErrorCode::missingDependency, "Lifecycle: an application executor is required"});
     m_impl = std::make_shared<Impl>(std::move(executor));
 }
 Lifecycle::~Lifecycle() = default;
-auto Lifecycle::startup() -> asio::awaitable<business::Update> { return Impl::receive(m_impl); }
+auto Lifecycle::executor() const -> asio::any_io_executor { return m_impl->executor; }
+void Lifecycle::track(function<void()> cancel)
+{
+    {
+        const auto lock = scoped_lock(m_impl->gate);
+        m_impl->startups.push_back(cancel);
+    }
+    if (m_impl->stopRequested.load()) cancel();
+}
 void Lifecycle::requestStop()
 {
     if (m_impl->stopRequested.exchange(true)) return;
-    // Release the startup receiver even if shutdown happens before async_main starts.
-    m_impl->started.close();
+    // Release startup consumers even if shutdown happens before async_main starts.
+    m_impl->cancelStartups();
     m_impl->stopping.try_send(asio::error_code{});
 }
 
 auto async_main(Dependencies dependencies) -> asio::awaitable<void>
 {
     if (!dependencies.lifecycle)
-        throw invalid_argument("An application lifecycle is required.");
+        throw Exception({ErrorCode::missingDependency, "async_main: an application lifecycle is required"});
     const auto state = dependencies.lifecycle->m_impl;
     if (state->running.exchange(true))
-        throw logic_error("Run async_main once per application lifecycle.");
+        throw Exception({ErrorCode::contractViolation, "async_main: this lifecycle is already running"});
     try {
-        if (!dependencies.tasks)
-            throw invalid_argument("Application services are required.");
-        if (state->stopRequested.load()) co_return;
-
-        // Every service keeps its own strand, even when called by the root coroutine.
-        auto loaded = co_await asio::co_spawn(dependencies.tasks->executor(),
-            dependencies.tasks->reload(), asio::use_awaitable);
-        if (!state->started.try_send(asio::error_code{}, std::move(loaded)) && !state->stopRequested.load())
-            throw logic_error("The application startup result could not be delivered.");
+        for (auto index = std::size_t{0}; index < dependencies.startup.size(); ++index) {
+            if (state->stopRequested.load()) co_return;
+            if (!co_await dependencies.startup[index]() && !state->stopRequested.load())
+                throw Exception({ErrorCode::contractViolation, std::format(
+                    "async_main: startup step {} could not deliver its result; register each Startup for one step", index)});
+        }
 
         co_await state->stopping.async_receive(asio::use_awaitable);
         // Cancel and await long-lived business I/O here when adding it to the template.
         // The task sample has finite operations; the runtime drains those before RAII teardown.
     } catch (...) {
-        state->started.close();
+        state->cancelStartups();
         throw;
     }
 }

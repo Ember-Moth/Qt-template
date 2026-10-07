@@ -7,6 +7,7 @@ class QmlTest : public QObject
 private slots:
     void initTestCase();
     void viewCommandsAndSaveFailure();
+    void pendingTaskLocksOnlyItsRow();
     void viewRequiresInjectedContext();
     void registeredDependenciesAreProvidedByCpp();
 };

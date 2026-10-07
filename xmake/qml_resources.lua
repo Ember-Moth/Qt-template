@@ -13,12 +13,14 @@ function generate(target)
     os.mkdir(directory)
     local entries = {"module Template.Ui", "typeinfo plugin.qmltypes", "prefer :/qt/qml/Template/Ui/"}
     local resources = {'<RCC><qresource prefix="/qt/qml/Template/Ui">'}
+    local qmlfiles = {}
     for _, file in ipairs(os.files("src/ui/**.qml")) do
         local name = path.basename(file)
         write_if_changed(path.join(directory, name .. ".qml"), io.readfile(file))
         local singleton = (io.readfile(file) or ""):find("pragma Singleton", 1, true)
         table.insert(entries, (singleton and "singleton " or "") .. name .. " 1.0 " .. name .. ".qml")
         table.insert(resources, string.format('<file alias="%s.qml">%s</file>', name, path.absolute(file)))
+        table.insert(qmlfiles, {source = path.absolute(file), resource = "/qt/qml/Template/Ui/" .. name .. ".qml"})
     end
     local qmldir = path.join(directory, "qmldir")
     write_if_changed(qmldir, table.concat(entries, "\n") .. "\n")
@@ -28,4 +30,6 @@ function generate(target)
     write_if_changed(qrc, table.concat(resources, "\n"))
     target:add("files", qrc)
     target:data_set("template.qml.directory", directory)
+    target:data_set("template.qml.qrc", qrc)
+    target:data_set("template.qml.files", qmlfiles)
 end

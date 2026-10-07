@@ -18,12 +18,38 @@ struct Task
     bool operator==(const Task &) const = default;
 };
 
-enum class ErrorCode { invalidTitle, invalidRecord, notFound, notReady, storage, invalidFormat, internal };
+enum class ErrorCode
+{
+    // Returned through std::expected.
+    invalidTitle,
+    invalidRecord,
+    notFound,
+    notReady,
+    storage,
+    invalidFormat,
+    // Thrown as Exception: an object cannot be constructed or a caller broke a usage contract.
+    missingDependency,
+    contractViolation,
+};
 
+// detail reads "<context>: <reason>", outermost context first.
 struct Error
 {
     ErrorCode code;
     string detail;
+};
+auto withContext(Error error, string_view context) -> Error;
+
+// Thrown only for construction failures and unrecoverable contract violations.
+class Exception : public std::exception
+{
+public:
+    explicit Exception(Error error) : m_error(std::move(error)) {}
+    auto error() const noexcept -> const Error & { return m_error; }
+    auto what() const noexcept -> const char * override { return m_error.detail.c_str(); }
+
+private:
+    Error m_error;
 };
 
 using Tasks = vector<Task>;

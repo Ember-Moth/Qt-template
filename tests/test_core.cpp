@@ -1,3 +1,4 @@
+#include <asio/post.hpp>
 #include "test_core.h"
 #include <QAbstractItemModelTester>
 #include <QDir>
@@ -33,6 +34,28 @@ struct TaskFixture
               std::make_shared<storage::MmkvStore>(nativePath(directory)))) {}
     auto dependencies() const -> TaskViewModel::Dependencies { return {service}; }
 };
+// Holds the runtime thread so accepted commands stay in flight until open() or destruction.
+struct RuntimeGate
+{
+    std::promise<void> release;
+    bool opened = false;
+    explicit RuntimeGate(runtime::AsioRuntime &runtime)
+    {
+        asio::post(runtime.executor(), [gate = release.get_future().share()] { gate.wait(); });
+    }
+    void open()
+    {
+        if (!opened) release.set_value();
+        opened = true;
+    }
+    ~RuntimeGate() { open(); }
+};
+auto roleChanges(const QSignalSpy &spy, int role)
+{
+    return std::ranges::count_if(spy, [role](const QList<QVariant> &arguments) {
+        return qvariant_cast<QList<int>>(arguments.at(2)).contains(role);
+    });
+}
 } // namespace
 
 void ViewModelTest::serviceIsInjected()
@@ -144,7 +167,9 @@ void ViewModelTest::commandsAndModelNotifications()
     QVERIFY(viewModel.setTaskCompleted(first.id, true));
     QTRY_VERIFY(!viewModel.busy());
     QCOMPARE(viewModel.remainingCount(), 1);
-    QCOMPARE(changed.count(), 1);
+    QCOMPARE(roleChanges(changed, TaskListModel::CompletedRole), 1);
+    // The row was marked pending while saving and released afterwards.
+    QCOMPARE(roleChanges(changed, TaskListModel::PendingRole), 2);
     QVERIFY(viewModel.removeTask(first.id));
     QTRY_VERIFY(!viewModel.busy());
     QVERIFY(viewModel.setTaskCompleted(second.id, true));
@@ -199,6 +224,58 @@ void ViewModelTest::validationAndSaveFailure()
     QTRY_VERIFY(!viewModel.busy());
     QCOMPARE(viewModel.remainingCount(), 0);
     QVERIFY(viewModel.errorMessage().isEmpty());
+}
+
+void ViewModelTest::concurrentCommandsLockOnlyTheirTargets()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    TaskFixture fixture(directory.filePath("mmkv"));
+    TaskViewModel viewModel(fixture.dependencies());
+    QVERIFY(viewModel.reload());
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.addTask("First"));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.addTask("Second"));
+    QTRY_VERIFY(!viewModel.busy());
+    const auto first = viewModel.tasks()->tasks().at(0).id;
+    const auto second = viewModel.tasks()->tasks().at(1).id;
+    QSignalSpy rejected(&viewModel, &TaskViewModel::commandRejected);
+
+    RuntimeGate gate(fixture.asyncRuntime);
+    QVERIFY(viewModel.setTaskCompleted(first, true));
+    QVERIFY(viewModel.tasks()->isPending(first));
+    QVERIFY(viewModel.tasks()->data(viewModel.tasks()->index(0), TaskListModel::PendingRole).toBool());
+    QVERIFY(!viewModel.setTaskCompleted(first, false));
+    QVERIFY(!viewModel.removeTask(first));
+    // Other tasks and the input stay available while the first task saves.
+    QVERIFY(viewModel.removeTask(second));
+    QVERIFY(viewModel.addTask("Third"));
+    QVERIFY(viewModel.adding() && viewModel.busy() && !viewModel.loading());
+    QVERIFY(!viewModel.addTask("Fourth"));
+    QVERIFY(!viewModel.reload());
+    QCOMPARE(rejected.count(), 4);
+    for (const auto &arguments : rejected)
+        QVERIFY(!arguments.at(0).toString().isEmpty());
+
+    gate.open();
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(!viewModel.adding() && !viewModel.tasks()->isPending(first) && !viewModel.tasks()->isPending(second));
+    QCOMPARE(viewModel.totalCount(), 2);
+    QCOMPARE(viewModel.tasks()->tasks().at(0).id, first);
+    QVERIFY(viewModel.tasks()->tasks().at(0).completed);
+    QCOMPARE(viewModel.tasks()->tasks().at(1).title, QString("Third"));
+    QVERIFY(viewModel.errorMessage().isEmpty());
+
+    // A reload locks the whole list until it completes.
+    RuntimeGate loading(fixture.asyncRuntime);
+    QVERIFY(viewModel.reload());
+    QVERIFY(viewModel.loading());
+    QVERIFY(!viewModel.addTask("While loading") && !viewModel.setTaskCompleted(first, false));
+    QCOMPARE(rejected.count(), 6);
+    loading.open();
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(!viewModel.loading() && viewModel.ready());
 }
 
 void ViewModelTest::loadRecoveryAndDestruction()

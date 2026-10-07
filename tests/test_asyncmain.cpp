@@ -32,11 +32,18 @@ struct Fixture
     shared_ptr<storage::MmkvStore> store = std::make_shared<storage::MmkvStore>(directory.path / "mmkv");
     shared_ptr<business::TaskService> tasks = std::make_shared<business::TaskService>(runtime.executor(), store);
     shared_ptr<application::Lifecycle> lifecycle = std::make_shared<application::Lifecycle>(runtime.executor());
-    auto run()
+    application::Startup<business::UpdateResult> startup = lifecycle->startup<business::UpdateResult>();
+    auto run(std::vector<application::StartupStep> steps)
     {
         return asio::co_spawn(asio::make_strand(runtime.executor()),
-            application::async_main({tasks, lifecycle}), asio::use_future);
+            application::async_main({lifecycle, std::move(steps)}), asio::use_future);
     }
+    auto run() { return run({application::startup_step(tasks, &business::TaskService::reload, startup)}); }
+    template <class Result> auto received(const application::Startup<Result> &result)
+    {
+        return asio::co_spawn(runtime.executor(), result.result(), asio::use_future);
+    }
+    auto received() { return received(startup); }
     ~Fixture() { lifecycle->requestStop(); runtime.finish(); }
 };
 template <class T> auto receive(std::future<T> &future) -> T
@@ -44,11 +51,26 @@ template <class T> auto receive(std::future<T> &future) -> T
     require(future.wait_for(std::chrono::seconds(5)) == future_status::ready);
     return future.get();
 }
-template <class T> void cancelled(std::future<T> &future)
+// A delivered startup result that succeeded.
+auto loaded(std::future<std::optional<business::UpdateResult>> &future) -> business::Update
 {
-    require(future.wait_for(std::chrono::seconds(5)) == future_status::ready);
-    try { future.get(); require(false); }
-    catch (const std::system_error &) {}
+    auto result = receive(future);
+    require(result && result->has_value());
+    return **result;
+}
+// Cancellation is an empty result, not an exception.
+template <class T> void cancelled(std::future<std::optional<T>> &future)
+{
+    require(!receive(future).has_value());
+}
+template <class Run> void throwsApplicationError(Run run, application::ErrorCode code, std::string_view context)
+{
+    try {
+        run();
+        require(false);
+    } catch (const application::Exception &error) {
+        require(error.error().code == code && error.error().detail.find(context) != std::string::npos);
+    }
 }
 
 void startupAndShutdown()
@@ -56,14 +78,14 @@ void startupAndShutdown()
     Fixture fixture;
     const auto records = storage::Strings{"seed", "Loaded by async_main", "0"};
     require(fixture.store->setStrings("tasks.items", records).has_value());
-    auto startup = asio::co_spawn(fixture.runtime.executor(), fixture.lifecycle->startup(), asio::use_future);
+    auto startup = fixture.received();
     auto entry = fixture.run();
-    const auto loaded = receive(startup);
-    require(loaded.ready && loaded.changed && !loaded.error);
-    require(loaded.tasks.size() == 1 && loaded.tasks.at(0).title == "Loaded by async_main");
+    const auto update = loaded(startup);
+    require(update.ready && update.changed);
+    require(update.tasks.size() == 1 && update.tasks.at(0).title == "Loaded by async_main");
     require(entry.wait_for(std::chrono::seconds(0)) == future_status::timeout);
     auto add = asio::co_spawn(fixture.tasks->executor(), fixture.tasks->addTask("While running"), asio::use_future);
-    require(receive(add).tasks.size() == 2);
+    require(receive(add)->tasks.size() == 2);
     fixture.lifecycle->requestStop();
     fixture.lifecycle->requestStop();
     receive(entry);
@@ -75,11 +97,14 @@ void stopBeforeStartup()
 {
     Fixture fixture;
     fixture.lifecycle->requestStop();
-    auto startup = asio::co_spawn(fixture.runtime.executor(), fixture.lifecycle->startup(), asio::use_future);
+    auto startup = fixture.received();
     auto entry = fixture.run();
     receive(entry);
     cancelled(startup);
     require(!std::filesystem::exists(fixture.directory.path / "mmkv"));
+    // A result registered after stopping is released at once.
+    auto late = fixture.received(fixture.lifecycle->startup<business::UpdateResult>());
+    cancelled(late);
 }
 
 void startupFailureAndRecovery()
@@ -87,14 +112,15 @@ void startupFailureAndRecovery()
     Fixture fixture;
     const auto path = fixture.directory.path / "mmkv";
     { auto blocker = std::ofstream{path}; blocker << "blocked"; }
-    auto startup = asio::co_spawn(fixture.runtime.executor(), fixture.lifecycle->startup(), asio::use_future);
+    auto startup = fixture.received();
     auto entry = fixture.run();
+    // A failed load is a delivered result carrying the business error, not a cancellation.
     const auto failed = receive(startup);
-    require(!failed.ready && failed.error && failed.error->code == business::ErrorCode::storage);
+    require(failed && !failed->has_value() && failed->error().code == business::ErrorCode::storage);
     require(entry.wait_for(std::chrono::seconds(0)) == future_status::timeout);
     std::filesystem::remove(path);
     auto retry = asio::co_spawn(fixture.tasks->executor(), fixture.tasks->reload(), asio::use_future);
-    require(receive(retry).ready);
+    require(receive(retry)->ready);
     fixture.lifecycle->requestStop();
     receive(entry);
 }
@@ -103,13 +129,12 @@ void immediateShutdown()
 {
     for (auto index = 0; index < 30; ++index) {
         Fixture fixture;
-        auto startup = asio::co_spawn(fixture.runtime.executor(), fixture.lifecycle->startup(), asio::use_future);
+        auto startup = fixture.received();
         auto entry = fixture.run();
         fixture.lifecycle->requestStop();
         receive(entry);
-        require(startup.wait_for(std::chrono::seconds(5)) == future_status::ready);
-        try { static_cast<void>(startup.get()); }
-        catch (const std::system_error &) {}
+        // Either delivered before the stop or cancelled by it; neither throws.
+        static_cast<void>(receive(startup));
         fixture.runtime.finish();
     }
 }
@@ -118,12 +143,55 @@ void unexpectedFailureReleasesStartup()
 {
     Fixture fixture;
     fixture.tasks.reset();
-    auto startup = asio::co_spawn(fixture.runtime.executor(), fixture.lifecycle->startup(), asio::use_future);
+    auto startup = fixture.received();
     auto entry = fixture.run();
-    require(entry.wait_for(std::chrono::seconds(5)) == future_status::ready);
-    try { entry.get(); require(false); }
-    catch (const std::invalid_argument &) {}
+    throwsApplicationError([&] { receive(entry); }, application::ErrorCode::missingDependency, "has no service");
     cancelled(startup);
+}
+
+void independentStartupSteps()
+{
+    Fixture fixture;
+    // A second feature brings its own service and startup result; async_main stays unchanged.
+    auto notes = std::make_shared<business::TaskService>(fixture.runtime.executor(),
+        std::make_shared<storage::MmkvStore>(fixture.directory.path / "mmkv", "notes"));
+    const auto notesStartup = fixture.lifecycle->startup<business::UpdateResult>();
+    require(fixture.store->setStrings("tasks.items", storage::Strings{"task", "First feature", "0"}).has_value());
+    auto first = fixture.received();
+    auto second = fixture.received(notesStartup);
+    auto entry = fixture.run({application::startup_step(fixture.tasks, &business::TaskService::reload, fixture.startup),
+        application::startup_step(notes, &business::TaskService::reload, notesStartup)});
+    require(loaded(first).tasks.at(0).title == "First feature");
+    const auto notesLoaded = loaded(second);
+    require(notesLoaded.ready && notesLoaded.tasks.empty());
+    require(entry.wait_for(std::chrono::seconds(0)) == future_status::timeout);
+    fixture.lifecycle->requestStop();
+    receive(entry);
+}
+
+void laterStartupFailureReleasesRemainingConsumers()
+{
+    Fixture fixture;
+    const auto missing = fixture.lifecycle->startup<business::UpdateResult>();
+    auto first = fixture.received();
+    auto second = fixture.received(missing);
+    auto entry = fixture.run({application::startup_step(fixture.tasks, &business::TaskService::reload, fixture.startup),
+        application::startup_step(shared_ptr<business::TaskService>{}, &business::TaskService::reload, missing)});
+    require(loaded(first).ready);
+    throwsApplicationError([&] { receive(entry); }, application::ErrorCode::missingDependency, "has no service");
+    cancelled(second);
+}
+
+void wiringFailuresThrow()
+{
+    throwsApplicationError([] { application::Lifecycle lifecycle{asio::any_io_executor{}}; },
+        application::ErrorCode::missingDependency, "Lifecycle");
+    Fixture fixture;
+    auto entry = fixture.run();
+    auto again = fixture.run();
+    throwsApplicationError([&] { receive(again); }, application::ErrorCode::contractViolation, "already running");
+    fixture.lifecycle->requestStop();
+    receive(entry);
 }
 } // namespace
 
@@ -135,6 +203,9 @@ int main()
         startupFailureAndRecovery();
         immediateShutdown();
         unexpectedFailureReleasesStartup();
+        independentStartupSteps();
+        laterStartupFailureReleasesRemainingConsumers();
+        wiringFailuresThrow();
         std::print("Async application lifecycle checks passed.\n");
         return 0;
     } catch (const std::exception &error) {

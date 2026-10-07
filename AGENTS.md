@@ -36,9 +36,16 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 - Asio 公共运行时放在 `runtime`，由 ApplicationContext 创建并统一管理其生命周期。运行时管理 `io_context`、work guard 与后台线程；业务服务接收注入的执行器，不创建自己的事件循环或线程，不依赖其他业务服务获取公共运行时。
 - 服务基于注入的执行器创建自己的 strand，业务协程在 `service.executor()` 上启动，业务状态只在该执行器上访问。MMKV 的同步操作放在运行时后台线程执行。
 - 已创建的业务协程持有共享状态，服务对象销毁后仍可完成。公共运行时必须活过所有使用者；停止提交后在应用所属线程调用 `finish()` 或析构，等待已提交操作完成。长期 I/O 需由所属业务先取消。
-- 应用级异步入口为 `app/asyncmain/` 的 `Template.App.AsyncMain`，使用 `async_main(Dependencies) -> asio::awaitable<void>`；模块不依赖 Qt，归入 template_core，可在无 Qt 配置下验证。AsioRuntime 管理运行时资源，ApplicationContext 装配依赖，async_main 编排应用级初始化与退出清理。
+- 应用级异步入口为 `app/asyncmain/` 的 `Template.App.AsyncMain`，使用 `async_main(Dependencies) -> asio::awaitable<void>`；模块不依赖 Qt，归入 template_core，可在无 Qt 配置下验证。AsioRuntime 管理运行时资源，ApplicationContext 装配依赖，async_main 按顺序执行 Dependencies 中的启动步骤并编排退出清理；async_main 不依赖具体业务服务，新增功能不修改该模块。
 - ApplicationContext 构造时只装配，main 加载 QML 后调用一次 start()，再运行 Qt app.exec()。首次业务加载由 async_main 发起；ViewModel 构造时不自动 reload，通过 Initialization 接收启动结果，独立使用时显式调用 reload()。
-- Lifecycle 的启动结果与退出通知使用 Asio 通道，不给业务接口添加完成回调；startup() 由一个消费者接收当前业务启动结果。退出通知可早于协程等待；stop() 幂等并拒绝新的界面命令，aboutToQuit 与析构都通知退出。Impl 析构先请求退出，在 ViewModel 和服务仍存在时 finish() 等待后台操作与线程结束，再按成员顺序释放资源；退出清理不等待 GUI 回调。新增持续 I/O 时由所属业务响应退出、取消操作，并在 async_main 返回前等待清理完成。
+- Lifecycle 的启动结果与退出通知使用 Asio 通道，不给业务接口添加完成回调；每个需要启动加载的功能通过 `lifecycle->startup<Result>()` 登记一个只有单一消费者的 `Startup<Result>`，由 `startup_step` 在服务执行器上运行加载并交付，退出或启动失败时统一取消。ApplicationContext 用 `attach(viewModel, service, &Service::operation)` 为功能接线启动步骤、`initialize()` 与 `stop()`；没有启动加载的 ViewModel 用 `attach(viewModel)`，只在退出时接收 `stop()`。退出通知可早于协程等待；stop() 幂等并拒绝新的界面命令，aboutToQuit 与析构都通知退出。Impl 析构先请求退出，在 ViewModel 和服务仍存在时 finish() 等待后台操作与线程结束，再按成员顺序释放资源；退出清理不等待 GUI 回调。新增持续 I/O 时由所属业务响应退出、取消操作，并在 async_main 返回前等待清理完成。
+
+## 错误处理
+
+- 可恢复的失败通过 `std::expected<T, Error>` 返回，各层使用自己的 `enum class ErrorCode` 与 `Error`（`business`、`storage`、`application`）。业务失败、校验失败、I/O 与格式错误都不抛异常。
+- `Error::detail` 按 `<上下文>: <原因>` 书写，由外向内列出操作、对象（任务 ID、键、MMKV 实例与目录、记录序号）和原因；向上传递时用 `withContext` 或同一格式加上外层上下文，不丢弃内层信息。
+- 只在构造失败（缺少依赖）和调用方违反使用约定（在错误的执行器上运行、重复初始化或重复启动）时抛出所在层的 `Exception`，它携带同样的 `ErrorCode` 与带上下文的 `Error`；不抛标准库异常。退出导致的启动结果取消是正常流程，返回空结果。
+- 第三方库的异常在边界转换：MMKV SDK 抛出的异常在 storage 内转为 `storage::Error`，只有 `std::bad_alloc` 继续传播；业务服务不捕获异常，到达 ViewModel 与 ApplicationContext 的异常按不可恢复处理，在 Qt 边界显示或记录。
 
 ## 模板范围与持久化
 
@@ -49,6 +56,7 @@ README 提供上手、配置与验证说明，架构文档解释职责与生命�
 - ApplicationContext 创建共享 MmkvStore 并注入服务；不同业务使用具名键（如 settings.theme、tasks.items），按需使用独立的实例 ID。任务示例的编解码在 TaskService 中完成。
 - 保持模板简洁，不恢复 JSON 依赖、旧格式兼容或数据迁移代码，不恢复独立的 `business_main.cpp` 示例入口。
 - 持久化成功后提交业务状态，失败保留已提交状态；新增成功后才清空界面输入。
+- 保存期间只锁定受影响的界面：不同任务的命令可以并发，服务 strand 按顺序执行并返回完整快照；保存中的任务、进行中的新增与加载各自拒绝新命令。被拒绝的命令返回 false 并发出带原因的 `commandRejected`，界面据此提示，不整体禁用。
 
 ## 验证与编辑器
 

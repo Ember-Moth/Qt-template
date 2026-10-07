@@ -62,12 +62,12 @@ Task 模块重导出 TaskList 模块。应用与测试使用 `import Template.Vi
 2. ApplicationContext 装配 AsioRuntime、MmkvStore、TaskService、Lifecycle 和 TaskViewModel；构造不启动业务加载。
 3. QML 引擎接收 appContext，加载根窗口；页面通过 required property 接收具体 ViewModel。
 4. main 调用 `context.start()`，再进入 `app.exec()`。start 只接受一次，重复或停止后调用返回 false。
-5. ApplicationContext 启动启动结果消费者与根协程。TaskViewModel.initialize() 设置 busy，接收 Lifecycle.startup() 的结果 awaitable。
-6. async_main 在 TaskService.executor() 上 co_spawn / co_await reload，并交付 Update；Qt 完成处理器更新列表、ready、busy 和错误信息。根协程随后等待退出通知。
+5. ApplicationContext 依次调用已接线 ViewModel 的 initialize()，再启动根协程。TaskViewModel.initialize() 设置 busy，接收自己的 `Startup<Update>` 结果 awaitable。
+6. async_main 按顺序执行启动步骤：每一步在服务的 executor() 上 co_spawn / co_await 加载操作并交付结果；Qt 完成处理器更新列表、ready、busy 和错误信息。根协程随后等待退出通知。
 
-Lifecycle 使用容量为 1 的 Asio concurrent_channel，分别交付一次启动结果和保存退出通知。startup() 是单消费者接口；当前结果是待办服务的 Update。扩展多服务初始化时，按需求扩展启动结果与显式 Dependencies，并在 Qt 装配边界分发给对应 ViewModel。
+每个启动结果是一个容量为 1 的 Asio concurrent_channel，由 `lifecycle->startup<Result>()` 登记，只交付一次、只有一个消费者；Lifecycle 另用一个通道保存退出通知。`Dependencies` 只含 Lifecycle 与有序的启动步骤，`startup_step(service, &Service::operation, startup)` 把服务操作与其结果绑定，因此 async_main 不认识具体服务，新增功能无需修改 `app/asyncmain`。请求退出时尚未开始的步骤被跳过，所有登记的结果被取消，消费者收到空结果（`nullopt`）而非异常；退出后才登记的结果立即取消。
 
-初始化的存储错误作为业务结果交给界面，页面可调用 reload() 重试，根协程继续等待退出。未处理的根协程异常关闭启动通道，在 Qt 边界记录错误并请求应用退出。独立构造 ViewModel 时由调用方显式 reload()，应用级首次加载由 async_main 发起。
+初始化的存储错误作为业务结果交给界面，页面可调用 reload() 重试，根协程继续等待退出。未处理的根协程异常取消所有启动结果，已交付的结果不受影响，并在 Qt 边界记录错误并请求应用退出。独立构造 ViewModel 时由调用方显式 reload()，应用级首次加载由 async_main 发起。
 
 ### 退出与成员销毁
 
@@ -76,6 +76,14 @@ QCoreApplication 的 aboutToQuit 连接到 context.stop()。stop 幂等：先禁
 外层对象按 QGuiApplication、ApplicationContext、QQmlApplicationEngine 的顺序声明，QML 引擎先析构。ApplicationContext 内部依次持有 AsioRuntime、MMKV 存储、服务、Lifecycle、ViewModel。Impl 析构函数先再次请求停止，再调用运行时 finish()，此时 ViewModel 和服务仍存在；根协程与已接受操作结束、线程 join 后，成员再按相反顺序销毁，Qt application 最后销毁。
 
 因此清理不依赖 GUI 线程处理任何回复，Qt 事件循环结束后也能完成。示例资源由 RAII 释放。新增持续任务、定时器或网络初始化时，所属业务须响应退出请求，取消持续 I/O，并在 async_main 返回前 await 清理完成。
+
+## 错误处理
+
+可恢复的失败沿 `std::expected` 返回：MmkvStore 返回 `storage::Result<T>`，TaskService 的协程返回 `asio::awaitable<UpdateResult>`（`expected<Update, business::Error>`），失败时已提交状态不变。ViewModel 收到错误后翻译为界面文案；加载失败另将 ready 置为 false。
+
+错误码是各层的 `enum class ErrorCode`，`Error::detail` 由外向内带上下文，例如 `add task: write 'tasks.items' to MMKV store 'app' in '/…/mmkv': the store is open read-only`。存储层给出实例、目录与键，服务层加上操作与任务 ID，模型层给出字段、记录序号与偏移。
+
+异常只用于构造失败与违反使用约定：`business::Exception`、`application::Exception` 携带同样的错误码与上下文，例如缺少服务或执行器、在其他执行器上运行 TaskService 协程、重复初始化 ViewModel、重复运行 async_main。MMKV SDK 自身的异常在存储边界转为 `storage::Error`；不可恢复的异常在 ViewModel 显示为操作失败，在 ApplicationContext 记录后退出应用。
 
 ## 执行器与业务状态
 
@@ -86,6 +94,8 @@ AsioRuntime 是具体资源所有者，管理一个 io_context、work guard 和�
 业务状态仅在所属服务执行器上访问，MMKV 的同步调用留在后台线程。已创建的协程捕获共享状态，即使服务或 ViewModel 句柄先销毁仍可完成。公共运行时必须活过使用者，停止新提交后由所属线程 finish() 排空操作并 join。[Asio io_context](https://think-async.com/Asio/asio-1.38.2/doc/asio/reference/io_context.html)。
 
 ViewModel 的 Q_INVOKABLE 返回 true 只表示命令已接受。业务先保存候选数据，再提交内存状态；Qt 边界随后更新界面，新增成功才清空输入。保存失败保留已有业务状态、复选框状态和输入内容。
+
+不同任务的命令可以同时进行：服务 strand 依次执行，每个结果都是完整快照，按完成顺序应用到界面。ViewModel 只锁定受影响的部分：保存中的任务在列表模型中标记为 pending，只禁用该行；新增进行中时 adding 锁定输入，保证成功后清空的是已提交的文字；加载替换整个列表，loading 期间拒绝其他命令，加载也要等已接受的命令完成后才开始。busy 表示还有操作进行，只用于进度提示。被拒绝的命令返回 false 并发出 commandRejected(reason)，页面显示短暂提示。
 
 ## 通用 MMKV 后端
 
@@ -100,8 +110,8 @@ getter 返回 expected<optional<T>, storage::Error>，区分缺失键、空值�
 ## 扩展业务与 ViewModel
 
 1. 在 models / services 下添加业务模块与协程接口，使用应用注入的执行器；存储通过具名键或独立 MMKV 实例使用。源码由 xmake 自动发现。
-2. 添加 ViewModel 模块目录、QObject 头文件、导入入口与实现；Dependencies 只列出所需服务。需要应用级初始化时定义 Initialization，并在 async_main 中安排服务初始化。
-3. 在 ApplicationContext 装配服务、Lifecycle 与 ViewModel，分发启动结果，维护 stop 与析构顺序，为应用级 ViewModel 设置 context 为 QObject 父对象。
+2. 添加 ViewModel 模块目录、QObject 头文件、导入入口与实现；Dependencies 只列出所需服务。需要应用级初始化时定义 `Initialization{executor, result}` 与 `initialize()`、`stop()`，结果类型与服务的启动操作一致。
+3. 在 ApplicationContext::Impl 依次声明服务与 ViewModel 成员（context 为应用级 ViewModel 的 QObject 父对象），并在构造函数中调用一次 `attach(viewModel, service, &Service::operation)`；启动步骤、初始化、退出与析构顺序由它统一处理，`app/asyncmain` 无需修改。不需要启动加载的 ViewModel 调用 `attach(viewModel)`，只登记退出时的 `stop()`。
 4. 给 ApplicationContext 增加强类型只读 Q_PROPERTY，在 ui/qmltypes.h 添加 QML_FOREIGN / QML_NAMED_ELEMENT / QML_UNCREATABLE 注册；main 保持统一的 appContext 注入。
 5. 根组件将具体 ViewModel 传给页面，页面声明 required property；新增 QML 文件自动进入资源与 qmldir，当前资源生成器要求 QML 文件名在 src/ui 内唯一。
 6. 按改动验证 C++23/26、受影响的业务与 ViewModel/QML 测试、qmllint、clangd；涉及业务边界时检查无 Qt 构建。验证要求见 [AGENTS.md](../AGENTS.md#验证与编辑器)。
