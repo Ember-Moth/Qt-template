@@ -71,6 +71,16 @@ struct TaskViewModel::Impl
         viewModel.setError(std::move(message));
     }
 
+    // A task that left the list cannot be retried, so its error leaves with it.
+    void forgetMissingTasks(const QList<TaskItem> &tasks)
+    {
+        std::erase_if(errors, [&tasks](const auto &entry) {
+            const auto &[operation, id] = entry.first;
+            return operation == Operation::update
+                && std::ranges::none_of(tasks, [&id](const TaskItem &task) { return task.id == id; });
+        });
+    }
+
     // Commands complete with an UpdateResult; initialization may also complete empty when cancelled.
     static auto completion(TaskViewModel *viewModel, Operation operation, QString id = {})
     {
@@ -105,6 +115,7 @@ struct TaskViewModel::Impl
                         for (const auto &task : update.tasks)
                             items.append({QString::fromUtf8(task.id), QString::fromUtf8(task.title), task.completed});
                         guard->m_tasks.applyTasks(std::move(items));
+                        guard->m_impl->forgetMissingTasks(guard->m_tasks.tasks());
                         emit guard->countsChanged();
                     }
                     guard->setReady(update.ready);

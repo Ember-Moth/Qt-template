@@ -12,5 +12,6 @@ private slots:
     void validationAndSaveFailure();
     void concurrentCommandsLockOnlyTheirTargets();
     void concurrentErrorsStayWithTheirTargets();
+    void errorsLeaveWithTheirTasks();
     void loadRecoveryAndDestruction();
 };

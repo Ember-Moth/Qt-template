@@ -328,6 +328,23 @@ void ViewModelTest::concurrentErrorsStayWithTheirTargets()
     QVERIFY(viewModel.errorMessage().isEmpty());
 }
 
+void ViewModelTest::errorsLeaveWithTheirTasks()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    TaskFixture fixture(directory.filePath("mmkv"));
+    TaskViewModel viewModel(fixture.dependencies());
+    QVERIFY(viewModel.reload());
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.setTaskCompleted("missing", true));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(!viewModel.errorMessage().isEmpty());
+    // No later success can target a task outside the list, so the next snapshot drops its error.
+    QVERIFY(viewModel.addTask("Unrelated"));
+    QTRY_VERIFY(!viewModel.busy());
+    QVERIFY(viewModel.errorMessage().isEmpty());
+}
+
 void ViewModelTest::loadRecoveryAndDestruction()
 {
     QTemporaryDir directory;
