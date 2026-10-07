@@ -157,7 +157,7 @@ CMake 与 Ninja 用 clang-scan-deps 扫描模块依赖：头文件、模块接�
 
 本机已使用 macOS ARM64、CMake 4.4.4、Ninja 1.13.2、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：`debug`、`debug-cxx26`、`release` 预设各 7 项 CTest 测试通过，`core` 预设 5 项通过，构建无警告；qmllint、`check_clangd`（18 个源文件）、qmlcachegen 预编译单元的运行时使用，以及头文件与模块接口变更的增量构建检查通过。
 
-[GitHub Actions](.github/workflows/ci.yml) 使用 CMake 4.4.4 与 Ninja，在 Windows、macOS、Linux 上运行 `debug` 与 `debug-cxx26` 预设，并在 Linux 上运行无 Qt 的 `core` 预设；统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。迁移到 CMake 后的远端 CI 结果以最新一次运行为准。
+[GitHub Actions](.github/workflows/ci.yml) 使用 CMake 4.4.4 与 Ninja，在 Windows、macOS、Linux 上运行 `debug` 与 `debug-cxx26` 预设，并在 Linux 上运行无 Qt 的 `core` 预设；统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。迁移提交 `c994a76` 的远端 CI 七个任务全部通过：构建、CTest 测试与 qmllint 均成功，macOS 任务的 `check_clangd` 也已通过。
 
 ## 复用模板
 
