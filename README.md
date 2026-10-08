@@ -1,8 +1,8 @@
 # Qt Template
 
-Windows、macOS、Linux 的 Qt QML + MVVM 开发模板。默认统一使用 C++23，可切换 C++26；业务采用 C++ Modules、标准库、Asio 协程和 MMKV，Qt 类型止于 ViewModel 适配边界及外侧的 UI 与应用启动代码。
+Windows、macOS、Linux 的 Qt QML + MVVM 开发模板。默认统一使用 C++23，可切换 C++26；业务采用 C++ Modules、标准库、Asio 协程、MMKV，以及 cofetch HTTP 客户端与 glaze JSON，Qt 类型止于 ViewModel 适配边界及外侧的 UI 与应用启动代码。
 
-待办示例展示依赖注入、应用级 `async_main()`、GUI 线程更新和持久化失败处理。模板固定使用 Asio 与 MMKV，扩展业务时直接注入具体服务和后端。
+待办示例展示依赖注入、应用级 `async_main()`、GUI 线程更新和持久化失败处理；导入服务演示 HTTP 请求与 JSON 解析（只到业务层，不接入界面）。模板固定使用 Asio、MMKV、cofetch 与 glaze，扩展业务时直接注入具体服务和后端。
 
 - [项目开发约定](AGENTS.md)：后续修改必须遵循的规则。
 - [架构设计](docs/architecture.md)：模块边界、启动与退出流程、扩展方式。
@@ -26,7 +26,7 @@ cmake --build --preset debug --target lint
 open build/debug/qt_template.app
 ```
 
-Linux 使用 Clang 23 与系统 libstdc++ 15+（提供 `std` 模块源码）。Ubuntu 26.04 自带的 Clang 21 在同时包含 libstdc++ 头文件与 `import std;` 时报错，可从 [apt.llvm.org](https://apt.llvm.org) 安装 Clang 23：
+Linux 使用 Clang 23 与系统 libstdc++ 15+（提供 `std` 模块源码），另需 libcurl 开发包（Ubuntu 为 `libcurl4-openssl-dev`）。Ubuntu 26.04 自带的 Clang 21 在同时包含 libstdc++ 头文件与 `import std;` 时报错，可从 [apt.llvm.org](https://apt.llvm.org) 安装 Clang 23：
 
 ```sh
 export LLVM_ROOT=/usr/lib/llvm-23
@@ -59,7 +59,7 @@ $env:PATH = "$env:QT_ROOT/bin;$env:PATH"; .\build\debug\qt_template.exe
 
 每个预设使用独立构建目录，配置保存在其 `CMakeCache.txt`，切换预设不影响其他预设。配置时加 `-DTEMPLATE_TESTS=OFF` 关闭测试目标。
 
-Asio 1.38.2 与 MMKV 2.4.2 的源码地址和 SHA-256 固定在 [cmake/Dependencies.cmake](cmake/Dependencies.cmake)，由 FetchContent 下载到构建目录的 `_deps/`。MMKV 官方 C++ Core 直接编译为 `template_mmkv`，保留加密支持并内置 zlib；模板的存储 API 当前使用单进程、未加密实例。
+Asio 1.38.2、MMKV 2.4.2、cofetch 0.1.2 与 glaze 9.0.0 的源码地址和 SHA-256 固定在 [cmake/Dependencies.cmake](cmake/Dependencies.cmake)，由 FetchContent 下载到构建目录的 `_deps/`。libcurl 在 macOS 使用 SDK 自带的系统库，在 Linux 使用发行版的 libcurl；Windows 没有可链接的系统 libcurl，由同一文件从固定 SHA-256 的 curl 8.22.0 源码静态构建，TLS 使用系统的 Schannel。MMKV 官方 C++ Core 直接编译为 `template_mmkv`，保留加密支持并内置 zlib；模板的存储 API 当前使用单进程、未加密实例。
 
 ### 发布包
 
@@ -73,9 +73,9 @@ cmake --install build/release --prefix install/release
 
 | 平台 | 安装目录内容 |
 | --- | --- |
-| macOS | 自包含的 `qt_template.app`：Qt 框架、平台与样式插件、QML 模块，以及 Homebrew LLVM 的 libc++，可在未安装 Qt 和 LLVM 的机器上运行；对外分发前仍需用开发者证书签名并公证 |
-| Windows | `bin/qt_template.exe` 与同目录的 Qt DLL、插件和 QML 模块；目标机器需要 VC++ 运行库 |
-| Linux | `bin/qt_template` 与 Qt 部署的库、插件、QML 模块及 `qt.conf`；libstdc++ 与系统库来自目标系统 |
+| macOS | 自包含的 `qt_template.app`：Qt 框架、平台与样式插件、QML 模块，以及 Homebrew LLVM 的 libc++，可在未安装 Qt 和 LLVM 的机器上运行（libcurl 是系统库）；对外分发前仍需用开发者证书签名并公证 |
+| Windows | `bin/qt_template.exe` 与同目录的 Qt DLL、插件和 QML 模块，libcurl 已静态链接；目标机器需要 VC++ 运行库 |
+| Linux | `bin/qt_template` 与 Qt 部署的库、插件、QML 模块及 `qt.conf`；libstdc++、libcurl 与其他系统库来自目标系统 |
 
 `install/` 已被 Git 忽略。
 
@@ -83,6 +83,7 @@ cmake --install build/release --prefix install/release
 
 ```text
 src/
+├── errors/errors.cppm            # Template.Errors：各层共用的 Rust 风格 Result 与错误
 ├── models/task/                  # Template.Models：任务数据与业务规则
 │   ├── task.cppm
 │   └── task.cpp
@@ -90,13 +91,19 @@ src/
 │   ├── mmkv.cppm
 │   ├── mmkv.cpp
 │   └── mmkv_sdk.cppm              # 私有 SDK 实现分区
-├── services/taskservice/          # Template.Tasks：协程业务接口
-│   ├── taskservice.cppm
-│   └── taskservice.cpp
+├── network/                      # Template.Network.Http：HTTP 客户端
+│   ├── httpclient.cppm
+│   ├── httpclient.cpp
+│   └── httpclient_sdk.cppm        # cofetch 与 libcurl 的私有实现分区
+├── services/
+│   ├── taskservice/               # Template.Tasks：协程业务接口
+│   └── taskimportservice/         # Template.Tasks.Import：读取远程任务，:json 分区用 glaze 解析
 ├── runtime/                      # Template.Runtime.Asio：运行时资源
 │   ├── asioruntime.cppm
-│   └── asioruntime.cpp
+│   ├── asioruntime.cpp
+│   └── task.h                     # 协程词汇 runtime::Task、runtime::Executor
 ├── viewmodels/
+│   ├── async/spawn.h              # Qt 侧启动任务的 viewmodels::spawn
 │   ├── tasklistmodel/             # Template.ViewModels.TaskList
 │   └── taskviewmodel/             # Template.ViewModels.Task
 ├── ui/
@@ -111,31 +118,86 @@ src/
     └── applicationcontext/       # Template.App.Context：装配与 ViewModel 集合
 ```
 
-业务、ViewModel 和应用模块按模块建立子目录。`storage` 与 `runtime` 直接作为各自唯一后端的模块目录。接口、实现和可选分区放在同一目录，模块可以包含多个实现文件。
+业务、ViewModel 和应用模块按模块建立子目录。`storage`、`network` 与 `runtime` 直接作为各自唯一后端的模块目录。接口、实现和可选分区放在同一目录，模块可以包含多个实现文件。
 
 CMake 用 `file(GLOB_RECURSE … CONFIGURE_DEPENDS)` 按分层发现 `.cppm`（作为模块文件集）与 `.cpp`，Qt 层同时收集 `.h` 交给 AUTOMOC；新增文件在下次构建时自动重新配置。`qt_add_qml_module` 把 `src/ui` 的 QML 收集为 `Template.Ui` 模块，生成类型注册、qmldir 与 qmllint 目标，并由 qmlcachegen 预先编译为 C++，运行时不再解析 QML 源码。`Template.Ui` 构建为静态插件，应用与 QML 测试用 `Q_IMPORT_QML_PLUGIN(Template_UiPlugin)` 导入。模块的逻辑名称由 `export module` 决定。新增文件不需要逐个登记；额外库依赖仍需显式声明。QML 类型和依赖装配按[扩展步骤](docs/architecture.md#扩展业务与-viewmodel)更新。
 
 | 目标 | 内容 |
 | --- | --- |
-| `template_core` | 模型、MMKV、服务、Asio 运行时、`app/asyncmain`；不依赖 Qt |
+| `template_core` | 错误处理、模型、MMKV、HTTP 客户端、服务、Asio 运行时、`app/asyncmain`；不依赖 Qt |
 | `template_gui`、`template_guiplugin` | ViewModel、ApplicationContext 与 `Template.Ui` QML 模块及其静态插件 |
 | `qt_template` | Qt 桌面应用 |
-| `test_asyncmain`、`test_storage`、`test_business` | 无 Qt 测试 |
+| `test_errors`、`test_asyncmain`、`test_storage`、`test_business`、`test_network` | 无 Qt 测试 |
 | `test_viewmodel`、`test_qml` | Qt 适配与 QML 交互测试 |
 
 ## 启动、界面与退出
 
-`ApplicationContext` 构造时装配运行时、存储、服务、Lifecycle 和 ViewModel。main 加载 QML 后调用 `context.start()`，再运行 Qt 的 `app.exec()`。
+`ApplicationContext` 构造时装配运行时、存储、HTTP 客户端、服务、Lifecycle 和 ViewModel。main 加载 QML 后调用 `context.start()`，再运行 Qt 的 `app.exec()`。
 
-`async_main(Dependencies)` 在公共 Asio 运行时上执行，按顺序运行启动步骤：每一步在服务自己的执行器上 `co_spawn` 并 `co_await` 加载，再交付给该功能登记的 `Startup<Result>`，随后根协程等待退出通知。ApplicationContext 用一行 `attach(viewModel, service, &Service::operation)` 为每个功能接线，新增功能无需修改 `app/asyncmain`。ViewModel 构造时不自动加载；`initialize()` 接收结果，在 GUI 线程更新列表、ready、busy 和错误信息。独立使用 ViewModel 时显式调用 `reload()`。
+`async_main(Dependencies)` 在公共 Asio 运行时上执行，按顺序运行启动步骤：每一步 `co_await` 服务的加载操作，再交付给该功能登记的 `Startup<Result>`，随后根协程等待退出通知。ApplicationContext 用一行 `attach(viewModel, service, &Service::operation)` 为每个功能接线，新增功能无需修改 `app/asyncmain`。ViewModel 构造时不自动加载；`initialize()` 接收结果，在 GUI 线程更新列表、ready、busy 和错误信息。独立使用 ViewModel 时显式调用 `reload()`。
 
 QML 类型注册在 `ui/qmltypes.h`，实例由 ApplicationContext 持有。main 只注入 `appContext`；根组件将 `appContext.tasks` 传给页面，页面通过 `required property TaskViewModel viewModel` 声明依赖。保存期间只锁定受影响的任务行或新增输入，其余界面保持可用；被拒绝的命令通过 `commandRejected` 在页面上短暂提示原因。
 
-退出时 `aboutToQuit` 调用 `context.stop()`，拒绝新的界面命令并通知根协程。析构再次请求停止，调用 `finish()` 排空已接受操作并等待线程结束，再释放成员。清理不等待 GUI 回调，Qt 事件循环结束后仍能完成。示例使用有限操作；接入持续 I/O 时，所属业务需在退出请求到达后取消操作，并在根协程返回前等待清理完成。
+退出时 `aboutToQuit` 调用 `context.stop()`，拒绝新的界面命令，中止进行中的 HTTP 请求，并通知根协程。析构再次请求停止，调用 `finish()` 排空已接受操作并等待线程结束，再释放成员。清理不等待 GUI 回调，Qt 事件循环结束后仍能完成。示例使用有限操作；接入持续 I/O 时，所属业务需在退出请求到达后取消操作，并在根协程返回前等待清理完成。
+
+## 异步写法
+
+异步函数返回 `runtime::Task<T>`（`asio::awaitable<T>` 的别名），内部 `co_await`、`co_return`，调用方在任何协程里直接 `co_await`，和 Rust 的 async fn 类似，业务代码不接触执行器：
+
+```cpp
+// services/taskimportservice/taskimportservice.cpp
+auto fetchTasks(string url) -> Task<ImportResult>
+{
+    const auto context = "import tasks";
+    // HttpClient resumes this coroutine on the strand.
+    auto response = co_await http->get(url);
+    if (!response) co_return unexpected(networkFailure(response.error(), context));
+    const auto request = format("{}: GET {}", context, url);
+    if (!response->successful())
+        co_return unexpected(Error{ErrorCode::network, format("{}: HTTP {}", request, response->status)});
+    co_return decodeTasks(response->body, request);
+}
+```
+
+执行器只在基础设施里出现：服务用注入的执行器建立自己的 strand，公共方法内部把操作放到 strand 上运行，调用方在自己的执行器上恢复；Qt 侧统一用 `viewmodels::spawn(executor, task, receiver, onResult)` 启动任务，`onResult(exception_ptr failure, T value)` 在 GUI 线程收到结果，接收对象已销毁时跳过。`Task`、`Executor` 定义在 `runtime/task.h`，用到它们的单元像包含其他 Asio 头文件一样在全局模块片段包含它。
+
+`network::HttpClient` 用 cofetch 发送请求，复用运行时唯一的 io_context，传输在运行时线程上完成后同样把调用方派回它自己的执行器。任何 HTTP 状态都作为 `Response` 返回，传输失败与取消返回 `network::Error`。`business::TaskImportService` 读取 `[{"title": "...", "completed": false}, ...]` 形式的 JSON，用 glaze 解析并忽略其他字段，返回带新 ID、不落盘的任务记录。网络测试在进程内启动回环 HTTP 服务，不访问外网。设计细节见[架构文档](docs/architecture.md#http-与-json)。
 
 ## 错误处理
 
-可恢复的失败通过 `std::expected` 返回，错误码为各层的 `enum class ErrorCode`，错误信息按 `<上下文>: <原因>` 由外向内带上操作、任务 ID、键与 MMKV 实例。只有构造失败和违反使用约定时抛出 `business::Exception` 或 `application::Exception`；退出导致的启动取消返回空结果。规则见 [AGENTS.md](AGENTS.md#错误处理)，设计见[架构文档](docs/architecture.md#错误处理)。
+错误处理集中在 [Template.Errors](src/errors/errors.cppm)，写法对照 Rust。各层只定义自己的 `enum class ErrorCode`，再用三行别名引用共享模板：
+
+```cpp
+using Error = errors::Error<ErrorCode>;
+template <class T> using Result = errors::Result<T, ErrorCode>;
+using Exception = errors::Exception<ErrorCode>;
+```
+
+| Rust | 模板 |
+| --- | --- |
+| `Result<T, E>` | `errors::Result<T, Code>`，派生自 `std::expected`，补充 `is_ok`、`is_err`、`map`、`map_err`、`and_then`、`unwrap_or`、`expect` |
+| `Ok(v)`、`Ok(())`、`Err(e)` | `Ok(v)`、`Ok()`、`Err(code, "格式串", 参数…)` |
+| `r?` | 返回 Result 的同步函数里写 `co_await r` |
+| anyhow 的 `.context("…")` | Result 与 Error 的 `.context("…")` |
+| `impl From<storage::Error> for Error` | 特化 `errors::From<ErrorCode, storage::ErrorCode>`，`?` 与 `Err` 返回自动转换 |
+| `panic!`、`.expect("…")` | `.expect("…")` 失败时抛出 `Exception`，只用于违反约定与测试 |
+
+```cpp
+// services/taskservice/taskservice.cpp
+auto addTask(string title) -> UpdateResult
+{
+    const auto context = "add task";
+    co_await requireLoaded(context);
+    auto normalized = co_await normalizeTitle(title).context(context);
+    auto updated = tasks;
+    updated.push_back({.id = createTaskId(), .title = std::move(normalized)});
+    co_return commit(std::move(updated), context);
+}
+```
+
+`co_await` 只在返回 Result 的同步函数里表示 `?`；异步协程（`runtime::Task`）只等待异步操作，对 Result 使用 co_await 会被 Asio 在编译期拒绝。异步函数先等待 I/O，再把需要 `?` 的逻辑交给同步 Result 函数，例如导入服务的 `fetchTasks` 等待 HTTP 响应后调用 `importTasks`。
+
+错误信息按 `<上下文>: <原因>` 由外向内带上操作、任务 ID、键、MMKV 实例或请求的方法与 URL。只有构造失败和违反使用约定（重复初始化、重复启动）时抛出 `business::Exception` 或 `application::Exception`；退出导致的启动取消返回空结果。规则见 [AGENTS.md](AGENTS.md#错误处理)，设计见[架构文档](docs/architecture.md#错误处理)。
 
 ## 持久化
 
@@ -147,7 +209,7 @@ getter 返回 `expected<optional<T>, storage::Error>`：缺失键为空 optional
 
 实例 ID 使用可移植 ASCII 字母、数字、下划线、连字符和点，排除空值、单独的 `.` 与 `..`。相同目录和实例 ID 共享句柄与操作锁，最后一个引用释放时关闭。业务先保存候选数据，再提交内存状态；保存失败保留已提交状态，新增成功后才清空界面输入。
 
-模板不包含 JSON 兼容、历史数据迁移、可替换后端抽象或独立的业务演示程序。
+持久化不使用 JSON（glaze 只用于 HTTP 数据），模板不包含历史数据迁移、可替换后端抽象或独立的业务演示程序。
 
 ## 编辑器与增量构建
 
@@ -157,13 +219,13 @@ getter 返回 `expected<optional<T>, storage::Error>`：缺失键为空 optional
 
 CMake 在每个构建目录导出 `compile_commands.json`，覆盖命名模块（通过 `@…modmap` 响应文件）和标准库模块。`.clangd` 读取 `build/debug` 的编译数据库，并让 clangd 自建一致的 BMI；使用其他预设时修改 `.clangd` 的 `CompilationDatabase`。编译数据库包含本机路径，位于被 Git 忽略的 `build/`；切换标准或目录后重新配置，再重启语言服务器。
 
-`cmake --build --preset debug --target check_clangd` 使用 `LLVM_ROOT` 中的 clangd，检查该预设编译数据库中实际参与构建的项目 C++ 源码与模块（`core` 预设不含 Qt 层）的解析、类型和索引诊断；不执行逐位置的重构功能自检（泛型 auto 无法展开成具体类型）。MMKV SDK 头文件保留在私有 `:sdk` 实现分区的全局模块片段，存储实现导入该分区，避免 clangd 同时解析 SDK 标准库头文件和 import std 时的类型歧义；Windows 仍保持 include-before-import。
+clangd 23 对 C++ Modules 的支持仍不稳定：当前代码在 `core` 预设下没有诊断，`debug` 预设下 `applicationcontext.cpp` 会报出 `std::exception_ptr` 在不同模块中定义不一致的误报（编译器构建正常）。模板不保证 clangd 无诊断，CI 也不检查。`cmake --build --preset debug --target check_clangd` 保留为排查工具：它使用 `LLVM_ROOT` 中的 clangd，检查该预设编译数据库中实际参与构建的项目 C++ 源码与模块（`core` 预设不含 Qt 层）的解析、类型和索引诊断；不执行逐位置的重构功能自检（泛型 auto 无法展开成具体类型）。MMKV SDK 头文件保留在私有 `:sdk` 实现分区的全局模块片段，存储实现导入该分区，避免 clangd 同时解析 SDK 标准库头文件和 import std 时的类型歧义；Windows 仍保持 include-before-import。
 
-业务使用 `import std;`，按需声明 `using std::具体类型`。不使用 `using namespace std` 或假定存在 `std:vector` 等外部逐类型分区。Qt、Asio、MMKV 头文件按其工具链要求接入。
+业务使用 `import std;`，用 using 声明与命名空间别名引入需要的名字（`using std::format;`、`using asio::co_spawn;`、`using runtime::Task;`、`namespace fs = std::filesystem;`），代码中避免全限定名；`std::move` 保留限定。不使用 `using namespace std` 或假定存在 `std:vector` 等外部逐类型分区。Qt、Asio、MMKV、cofetch、glaze 头文件按其工具链要求接入。
 
 ### Qt Creator
 
-以下 Kit、启动环境、代码模型与 qmlls 行为在 macOS 上用 Qt Creator 20.0.2 验证：以临时设置和 LLVM 23 Kit 无界面打开项目，读取 Qt Creator 生成的编译数据库与 clangd、qmlls 诊断，并从日志确认它导入了 4 个配置预设、通过 `QT_ROOT` 找到 Qt；在 Configure Project 页面勾选预设需要界面操作，未包含在内。Preferences 在 macOS 的 Qt Creator 菜单中，在 Windows、Linux 的 Edit 菜单中。
+以下 Kit、启动环境、代码模型与 qmlls 行为在 macOS 上用 Qt Creator 20.0.2 验证（代码模型结果测于加入 HTTP 客户端之前的提交 `80b70d8`；当前代码的 clangd 状况见上文）：以临时设置和 LLVM 23 Kit 无界面打开项目，读取 Qt Creator 生成的编译数据库与 clangd、qmlls 诊断，并从日志确认它导入了 4 个配置预设、通过 `QT_ROOT` 找到 Qt；在 Configure Project 页面勾选预设需要界面操作，未包含在内。Preferences 在 macOS 的 Qt Creator 菜单中，在 Windows、Linux 的 Edit 菜单中。
 
 **配置 Kit**（Preferences › Kits）：
 
@@ -212,18 +274,20 @@ CMake 与 Ninja 用 clang-scan-deps 扫描模块依赖：头文件、模块接�
 
 | 检查 | 覆盖 |
 | --- | --- |
+| `test_errors` | `Ok`/`Err`、`?` 的提前返回与局部变量析构、`Result<void>`、`context`、跨层 `From` 转换、`map`/`map_err`/`and_then`/`unwrap_or`/`expect`、协程内异常传给调用方 |
 | `test_asyncmain` | 首次加载、提前退出、失败与重试、异常传播、多个功能的独立启动结果、启动取消返回空结果、装配错误异常 |
 | `test_storage` | 原生类型、空值、实例隔离、共享句柄、文件损坏保护、错误码与上下文 |
-| `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出、带上下文的错误、构造失败与约定异常 |
+| `test_business` | 业务校验、MMKV 重启读取、保存失败、协程与运行时退出、从其他执行器调用后回到调用方、带上下文的错误、构造失败 |
+| `test_network` | 回环 HTTP 服务上的状态码与请求体、跨执行器恢复、连接失败与超时、取消与 `stop()`、客户端提前销毁；导入服务的 JSON 解析、忽略多余字段、格式与标题错误、HTTP 错误状态、退出取消 |
 | `test_viewmodel` | 注入、一次初始化、GUI 通知、退出前已接受操作、并发命令只锁定各自目标、并发错误按目标保留与清除 |
 | `test_qml` | 类型注册、依赖传递、界面操作、失败时保留输入与状态、保存中只锁定所在行并提示被拒绝的命令、其他任务成功时仍显示新增失败 |
 | `lint` 目标 | `qt_add_qml_module` 生成的 qmllint 检查全部 QML 文件 |
-| `check_clangd` 目标 | 当前预设中项目 C++ 源码、模块及 MMKV SDK 私有分区的编辑器诊断 |
+| `check_clangd` 目标 | 排查用：当前预设中项目 C++ 源码与模块的 clangd 诊断，不作为通过条件 |
 | `cmake --install` | 安装应用并运行 Qt 部署脚本；CI 检查可执行文件、Qt Core 与 QtQuick.Controls 模块已复制 |
 
-本机已使用 macOS ARM64、CMake 4.4.4、Ninja 1.13.2、LLVM/libc++ 23.1.2、Qt 6.12.0 验证：`debug`、`debug-cxx26`、`release` 预设各 7 项 CTest 测试通过，`core` 预设 5 项通过，构建无警告；qmllint、`check_clangd`（18 个源文件）、qmlcachegen 预编译单元的运行时使用，以及头文件与模块接口变更的增量构建检查通过。`release` 预设安装出的 `qt_template.app` 约 130 MB，在清空环境变量的会话中启动，加载的库除系统库外都来自包内，`codesign --verify` 通过。Qt Creator 20.0.2 的验证结果见 [Qt Creator](#qt-creator)。
+本机已使用 macOS ARM64、CMake 4.4.4、Ninja 1.13.2、LLVM/libc++ 23.1.2、Qt 6.12.0 与系统 libcurl 8.7.1 验证：`debug`、`debug-cxx26`、`release` 预设各 9 项 CTest 测试通过，`core` 预设 7 项通过，构建无警告；`test_network` 连续运行 20 次全部通过；无 Qt 部分在 AddressSanitizer 下构建，`test_errors`、`test_storage`、`test_business`、`test_network`、`test_asyncmain` 均无报告；qmllint 通过。`release` 预设安装出的 `qt_template.app` 约 130 MB，在清空环境变量的会话中启动，除系统库（含 libcurl）外加载的库都来自包内，`codesign --verify` 通过。Windows 的 curl 源码构建配置在 macOS 上以关闭 TLS 的方式试构建过，Schannel 部分只能由 Windows CI 验证。Qt Creator 20.0.2 的验证结果见 [Qt Creator](#qt-creator)。
 
-[GitHub Actions](.github/workflows/ci.yml) 使用 CMake 4.4.4 与 Ninja，在 Windows、macOS、Linux 上运行 `debug` 与 `debug-cxx26` 预设，并在 Linux x64 与 ARM64 上运行无 Qt 的 `core` 预设；统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。迁移提交 `c994a76` 的远端 CI 七个任务全部通过：构建、CTest 测试与 qmllint 均成功，macOS 任务的 `check_clangd` 也已通过。其后加入的 Linux ARM64 `core` 任务与各平台 `debug` 任务的安装部署检查尚待远端运行。
+[GitHub Actions](.github/workflows/ci.yml) 使用 CMake 4.4.4 与 Ninja，在 Windows、macOS、Linux 上运行 `debug` 与 `debug-cxx26` 预设，并在 Linux x64 与 ARM64 上运行无 Qt 的 `core` 预设；统一使用 LLVM 23，Qt SDK 为 6.12.0，Windows 使用 VS 2026 的 MSVC STL。提交 `80b70d8` 的远端 CI 八个任务全部通过，包括 Linux ARM64 的 `core` 任务和三个平台 `debug` 任务的安装部署检查。加入 HTTP 客户端后，Linux 任务安装 libcurl 开发包，Windows 任务从源码构建 curl；这些改动尚待远端运行。CI 不再运行 `check_clangd`。
 
 ## 复用模板
 

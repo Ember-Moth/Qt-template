@@ -1,5 +1,5 @@
+#include "runtime/task.h"
 #include <asio/co_spawn.hpp>
-#include <asio/strand.hpp>
 #include <asio/use_future.hpp>
 
 import std;
@@ -35,8 +35,7 @@ struct Fixture
     application::Startup<business::UpdateResult> startup = lifecycle->startup<business::UpdateResult>();
     auto run(std::vector<application::StartupStep> steps)
     {
-        return asio::co_spawn(asio::make_strand(runtime.executor()),
-            application::async_main({lifecycle, std::move(steps)}), asio::use_future);
+        return asio::co_spawn(runtime.executor(), application::async_main({lifecycle, std::move(steps)}), asio::use_future);
     }
     auto run() { return run({application::startup_step(tasks, &business::TaskService::reload, startup)}); }
     template <class Result> auto received(const application::Startup<Result> &result)
@@ -84,7 +83,7 @@ void startupAndShutdown()
     require(update.ready && update.changed);
     require(update.tasks.size() == 1 && update.tasks.at(0).title == "Loaded by async_main");
     require(entry.wait_for(std::chrono::seconds(0)) == future_status::timeout);
-    auto add = asio::co_spawn(fixture.tasks->executor(), fixture.tasks->addTask("While running"), asio::use_future);
+    auto add = asio::co_spawn(fixture.runtime.executor(), fixture.tasks->addTask("While running"), asio::use_future);
     require(receive(add)->tasks.size() == 2);
     fixture.lifecycle->requestStop();
     fixture.lifecycle->requestStop();
@@ -119,7 +118,7 @@ void startupFailureAndRecovery()
     require(failed && !failed->has_value() && failed->error().code == business::ErrorCode::storage);
     require(entry.wait_for(std::chrono::seconds(0)) == future_status::timeout);
     std::filesystem::remove(path);
-    auto retry = asio::co_spawn(fixture.tasks->executor(), fixture.tasks->reload(), asio::use_future);
+    auto retry = asio::co_spawn(fixture.runtime.executor(), fixture.tasks->reload(), asio::use_future);
     require(receive(retry)->ready);
     fixture.lifecycle->requestStop();
     receive(entry);
@@ -184,7 +183,7 @@ void laterStartupFailureReleasesRemainingConsumers()
 
 void wiringFailuresThrow()
 {
-    throwsApplicationError([] { application::Lifecycle lifecycle{asio::any_io_executor{}}; },
+    throwsApplicationError([] { application::Lifecycle lifecycle{runtime::Executor{}}; },
         application::ErrorCode::missingDependency, "Lifecycle");
     Fixture fixture;
     auto entry = fixture.run();

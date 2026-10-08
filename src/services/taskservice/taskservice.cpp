@@ -1,7 +1,7 @@
 module;
-#include <asio/post.hpp>
+#include "runtime/task.h"
+#include <asio/co_spawn.hpp>
 #include <asio/strand.hpp>
-#include <asio/this_coro.hpp>
 #include <asio/use_awaitable.hpp>
 
 module Template.Tasks;
@@ -14,160 +14,167 @@ using string_view = std::basic_string_view<char>;
 using std::shared_ptr;
 using std::span;
 using std::size_t;
+using std::format;
+using std::make_shared;
+using std::erase_if;
+using std::ranges::find;
+using asio::co_spawn;
+using asio::make_strand;
+using asio::use_awaitable;
+using runtime::Task;
+using runtime::Executor;
+using storage::MmkvStore;
+using storage::Strings;
+using errors::Ok;
+using errors::Err;
+
+// Rust's impl From<storage::Error> for business::Error: a storage failure keeps its detail, and `?`
+// converts it on the way out.
+template <>
+struct errors::From<business::ErrorCode, storage::ErrorCode>
+{
+    static auto code(storage::ErrorCode source) -> business::ErrorCode
+    {
+        return source == storage::ErrorCode::invalidFormat ? business::ErrorCode::invalidFormat
+                                                           : business::ErrorCode::storage;
+    }
+};
 
 namespace business {
 namespace {
 constexpr auto snapshotKey = "tasks.items";
-using SnapshotResult = std::expected<storage::Strings, Error>;
-auto storageFailure(const storage::Error &error, string_view context) -> Error
-{
-    const auto code = error.code == storage::ErrorCode::invalidFormat ? ErrorCode::invalidFormat : ErrorCode::storage;
-    return {code, std::format("{}: {}", context, error.detail)};
-}
-auto decodeSnapshot(const storage::Strings &records) -> TaskResult
+
+auto decodeSnapshot(const Strings &records) -> TaskResult
 {
     if (records.size() % 3 != 0)
-        return std::unexpected(Error{ErrorCode::invalidFormat,
-            std::format("'{}' holds {} strings, not id/title/completed triples", snapshotKey, records.size())});
+        co_return Err(ErrorCode::invalidFormat, "'{}' holds {} strings, not id/title/completed triples",
+            snapshotKey, records.size());
     auto tasks = Tasks{};
     tasks.reserve(records.size() / 3);
     for (auto index = size_t{0}; index < records.size(); index += 3) {
         const auto &completed = records[index + 2];
         if (completed != "0" && completed != "1")
-            return std::unexpected(Error{ErrorCode::invalidFormat,
-                std::format("'{}' record {} has completion value '{}', expected 0 or 1", snapshotKey, index / 3, completed)});
+            co_return Err(ErrorCode::invalidFormat, "'{}' record {} has completion value '{}', expected 0 or 1",
+                snapshotKey, index / 3, completed);
         tasks.push_back({.id = records[index], .title = records[index + 1], .completed = completed == "1"});
     }
-    if (auto valid = validateTasks(tasks); !valid) return std::unexpected(withContext(valid.error(), snapshotKey));
-    return tasks;
+    co_await validateTasks(tasks).context(snapshotKey);
+    co_return tasks;
 }
-auto encodeSnapshot(span<const Task> tasks) -> SnapshotResult
+auto encodeSnapshot(span<const TaskRecord> tasks) -> Result<Strings>
 {
-    if (auto valid = validateTasks(tasks); !valid) return std::unexpected(valid.error());
-    auto records = storage::Strings{};
+    co_await validateTasks(tasks);
+    auto records = Strings{};
     records.reserve(tasks.size() * 3);
     for (const auto &task : tasks) {
         records.push_back(task.id);
         records.push_back(task.title);
         records.emplace_back(task.completed ? "1" : "0");
     }
-    return records;
-}
-auto notLoaded(string_view context) -> std::unexpected<Error>
-{
-    return std::unexpected(Error{ErrorCode::notReady, std::format("{}: the tasks are not loaded", context)});
+    co_return records;
 }
 } // namespace
 
+// The operations are synchronous Result functions that run on the strand; co_await in them is `?`.
 struct TaskService::Impl
 {
-    shared_ptr<storage::MmkvStore> store;
-    asio::any_io_executor executor;
+    shared_ptr<MmkvStore> store;
+    // Business state below is touched only on this strand.
+    Executor strand;
     Tasks tasks;
     bool ready = false;
-    Impl(asio::any_io_executor target, shared_ptr<storage::MmkvStore> source)
-        : store(std::move(source)), executor(std::move(target))
+    Impl(Executor executor, shared_ptr<MmkvStore> source) : store(std::move(source))
     {
         if (!executor)
             throw Exception({ErrorCode::missingDependency, "TaskService: an Asio executor is required"});
         if (!store)
             throw Exception({ErrorCode::missingDependency, "TaskService: an MMKV store is required"});
-        executor = asio::make_strand(executor);
+        strand = make_strand(std::move(executor));
     }
-    static auto keepAlive(shared_ptr<Impl> state, asio::awaitable<UpdateResult> operation) -> asio::awaitable<UpdateResult>
+    // Runs operation on the strand and resumes the caller on its own executor. The coroutine holds the
+    // shared state, so the operation completes even if the service handle is gone first.
+    template <class Operation>
+    static auto onStrand(shared_ptr<Impl> self, Operation operation) -> Task<UpdateResult>
     {
-        auto result = co_await std::move(operation);
-        // The coroutine frame retains state even if the service handle is gone.
-        static_cast<void>(state);
-        co_return result;
+        const auto strand = self->strand;
+        co_return co_await co_spawn(strand, [self = std::move(self), operation = std::move(operation)]() mutable
+            -> Task<UpdateResult> { co_return operation(*self); }, use_awaitable);
     }
-    auto enter(string_view operation) -> asio::awaitable<void>
-    {
-        const auto current = co_await asio::this_coro::executor;
-        if (current != executor)
-            throw Exception({ErrorCode::contractViolation,
-                std::format("TaskService::{}: run task coroutines on TaskService::executor()", operation)});
-        co_await asio::post(asio::use_awaitable);
-    }
+
     auto snapshot(bool changed = false) const -> Update
     {
         return {.tasks = tasks, .ready = ready, .changed = changed};
     }
+    auto requireLoaded(string_view context) const -> Result<void>
+    {
+        if (!ready) return Err(ErrorCode::notReady, "{}: the tasks are not loaded", context);
+        return Ok();
+    }
+    // Saves first and keeps the committed tasks when saving fails.
     auto commit(Tasks updated, string_view context) -> UpdateResult
     {
-        const auto encoded = encodeSnapshot(updated);
-        if (!encoded) return std::unexpected(withContext(encoded.error(), context));
-        if (auto saved = store->setStrings(snapshotKey, *encoded); !saved)
-            return std::unexpected(storageFailure(saved.error(), context));
+        const auto records = co_await encodeSnapshot(updated).context(context);
+        co_await store->setStrings(snapshotKey, records).context(context);
         tasks = std::move(updated);
-        return snapshot(true);
+        co_return snapshot(true);
     }
-    // Recoverable failures return Error; exceptions that reach here are unrecoverable.
-    auto reload() -> asio::awaitable<UpdateResult>
+    auto reload() -> UpdateResult
     {
-        co_await enter("reload");
         ready = false;
         const auto context = "load tasks";
-        auto loaded = store->getStrings(snapshotKey);
-        if (!loaded) co_return std::unexpected(storageFailure(loaded.error(), context));
-        auto decoded = decodeSnapshot(loaded->value_or(storage::Strings{}));
-        if (!decoded) co_return std::unexpected(withContext(decoded.error(), context));
-        tasks = std::move(*decoded);
+        const auto records = co_await store->getStrings(snapshotKey).context(context);
+        tasks = co_await decodeSnapshot(records.value_or(Strings{})).context(context);
         ready = true;
         co_return snapshot(true);
     }
-    auto addTask(string title) -> asio::awaitable<UpdateResult>
+    auto addTask(string title) -> UpdateResult
     {
-        co_await enter("addTask");
         const auto context = "add task";
-        if (!ready) co_return notLoaded(context);
-        auto normalized = normalizeTitle(title);
-        if (!normalized) co_return std::unexpected(withContext(normalized.error(), context));
+        co_await requireLoaded(context);
+        auto normalized = co_await normalizeTitle(title).context(context);
         auto updated = tasks;
-        updated.push_back({.id = createTaskId(), .title = std::move(*normalized)});
+        updated.push_back({.id = createTaskId(), .title = std::move(normalized)});
         co_return commit(std::move(updated), context);
     }
-    auto setTaskCompleted(string id, bool completed) -> asio::awaitable<UpdateResult>
+    auto setTaskCompleted(string_view id, bool completed) -> UpdateResult
     {
-        co_await enter("setTaskCompleted");
-        const auto context = std::format("{} task '{}'", completed ? "complete" : "reopen", id);
-        if (!ready) co_return notLoaded(context);
+        const auto context = format("{} task '{}'", completed ? "complete" : "reopen", id);
+        co_await requireLoaded(context);
         auto updated = tasks;
-        auto found = std::ranges::find(updated, id, &Task::id);
-        if (found == updated.end())
-            co_return std::unexpected(Error{ErrorCode::notFound, std::format("{}: no task has this id", context)});
+        auto found = find(updated, id, &TaskRecord::id);
+        if (found == updated.end()) co_return Err(ErrorCode::notFound, "{}: no task has this id", context);
         if (found->completed == completed) co_return snapshot();
         found->completed = completed;
         co_return commit(std::move(updated), context);
     }
-    auto removeTask(string id) -> asio::awaitable<UpdateResult>
+    auto removeTask(string_view id) -> UpdateResult
     {
-        co_await enter("removeTask");
-        const auto context = std::format("remove task '{}'", id);
-        if (!ready) co_return notLoaded(context);
+        const auto context = format("remove task '{}'", id);
+        co_await requireLoaded(context);
         auto updated = tasks;
-        if (std::erase_if(updated, [&id](const auto &task) { return task.id == id; }) == 0)
-            co_return std::unexpected(Error{ErrorCode::notFound, std::format("{}: no task has this id", context)});
+        if (erase_if(updated, [id](const auto &task) { return task.id == id; }) == 0)
+            co_return Err(ErrorCode::notFound, "{}: no task has this id", context);
         co_return commit(std::move(updated), context);
     }
 };
 
-TaskService::TaskService(asio::any_io_executor executor, shared_ptr<storage::MmkvStore> store)
-    : m_impl(std::make_shared<Impl>(std::move(executor), std::move(store))) {}
+TaskService::TaskService(Executor executor, shared_ptr<MmkvStore> store)
+    : m_impl(make_shared<Impl>(std::move(executor), std::move(store))) {}
 TaskService::~TaskService() = default;
-auto TaskService::executor() const -> asio::any_io_executor { return m_impl->executor; }
-// Capture shared state when creating the coroutine, before the service is destroyed.
-auto TaskService::reload() -> asio::awaitable<UpdateResult> { return Impl::keepAlive(m_impl, m_impl->reload()); }
-auto TaskService::addTask(string title) -> asio::awaitable<UpdateResult>
+auto TaskService::reload() -> Task<UpdateResult>
 {
-    return Impl::keepAlive(m_impl, m_impl->addTask(std::move(title)));
+    return Impl::onStrand(m_impl, [](Impl &impl) { return impl.reload(); });
 }
-auto TaskService::setTaskCompleted(string id, bool completed) -> asio::awaitable<UpdateResult>
+auto TaskService::addTask(string title) -> Task<UpdateResult>
 {
-    return Impl::keepAlive(m_impl, m_impl->setTaskCompleted(std::move(id), completed));
+    return Impl::onStrand(m_impl, [title = std::move(title)](Impl &impl) { return impl.addTask(title); });
 }
-auto TaskService::removeTask(string id) -> asio::awaitable<UpdateResult>
+auto TaskService::setTaskCompleted(string id, bool completed) -> Task<UpdateResult>
 {
-    return Impl::keepAlive(m_impl, m_impl->removeTask(std::move(id)));
+    return Impl::onStrand(m_impl, [id = std::move(id), completed](Impl &impl) { return impl.setTaskCompleted(id, completed); });
+}
+auto TaskService::removeTask(string id) -> Task<UpdateResult>
+{
+    return Impl::onStrand(m_impl, [id = std::move(id)](Impl &impl) { return impl.removeTask(id); });
 }
 } // namespace business

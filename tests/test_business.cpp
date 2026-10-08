@@ -1,4 +1,6 @@
+#include "runtime/task.h"
 #include <asio/co_spawn.hpp>
+#include <asio/io_context.hpp>
 #include <asio/post.hpp>
 #include <asio/use_future.hpp>
 
@@ -24,6 +26,7 @@ using std::future;
 using std::array;
 using std::pair;
 using std::promise;
+using namespace std::chrono_literals;
 
 namespace {
 void require(bool condition, source_location where = source_location::current())
@@ -38,10 +41,14 @@ struct TemporaryDirectory {
 };
 auto readFile(const std::filesystem::path &path) -> string;
 void writeFile(const std::filesystem::path &path, string_view content);
-auto await(business::TaskService &service, asio::awaitable<business::UpdateResult> task)
+// Runs a task to completion from this thread, on a loop of its own, as a caller outside the runtime.
+template <class T>
+auto await(runtime::Task<T> task) -> T
 {
-    auto future = asio::co_spawn(service.executor(), std::move(task), asio::use_future);
-    require(future.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    asio::io_context caller;
+    auto future = asio::co_spawn(caller, std::move(task), asio::use_future);
+    caller.run_for(10s);
+    require(future.wait_for(0s) == std::future_status::ready);
     return future.get();
 }
 bool mentions(const business::Error &error, string_view context)
@@ -54,28 +61,28 @@ void commands()
     auto store = std::make_shared<storage::MmkvStore>(directory.path / "mmkv");
     runtime::AsioRuntime asyncRuntime;
     business::TaskService service(asyncRuntime.executor(), store);
-    auto loaded = await(service, service.reload());
+    auto loaded = await(service.reload());
     require(loaded && loaded->ready);
-    auto first = await(service, service.addTask("  First task  "));
+    auto first = await(service.addTask("  First task  "));
     require(first && first->changed && first->tasks.at(0).title == "First task");
-    auto second = await(service, service.addTask("Second task"));
+    auto second = await(service.addTask("Second task"));
     require(second.has_value());
     const auto firstId = first->tasks.at(0).id;
     const auto secondId = second->tasks.at(1).id;
     require(firstId != secondId);
-    auto removed = await(service, service.removeTask(firstId));
+    auto removed = await(service.removeTask(firstId));
     require(removed && removed->tasks.size() == 1 && removed->tasks.at(0).id == secondId);
-    auto completed = await(service, service.setTaskCompleted(secondId, true));
+    auto completed = await(service.setTaskCompleted(secondId, true));
     require(completed && completed->tasks.at(0).completed && completed->changed);
     const auto snapshot = readFile(directory.path / "mmkv" / "app");
-    auto unchanged = await(service, service.setTaskCompleted(secondId, true));
+    auto unchanged = await(service.setTaskCompleted(secondId, true));
     require(unchanged && !unchanged->changed && readFile(directory.path / "mmkv" / "app") == snapshot);
-    auto invalid = await(service, service.removeTask("missing"));
+    auto invalid = await(service.removeTask("missing"));
     require(!invalid && invalid.error().code == business::ErrorCode::notFound
         && mentions(invalid.error(), "remove task 'missing'"));
     const auto blank = business::normalizeTitle(" \t ");
     require(!blank && blank.error().code == business::ErrorCode::invalidTitle && mentions(blank.error(), "task title"));
-    const auto rejected = await(service, service.addTask(string(121, 'x')));
+    const auto rejected = await(service.addTask(string(121, 'x')));
     require(!rejected && rejected.error().code == business::ErrorCode::invalidTitle
         && mentions(rejected.error(), "add task: task title: 121 UTF-16 code units"));
     require(business::normalizeTitle(string(120, 'x')).has_value());
@@ -105,40 +112,40 @@ void failuresAndRecovery()
         writeFile(root, "blocked");
         auto store = std::make_shared<storage::MmkvStore>(root);
         business::TaskService service(asyncRuntime.executor(), store);
-        const auto failed = await(service, service.reload());
+        const auto failed = await(service.reload());
         require(!failed && failed.error().code == business::ErrorCode::storage
             && mentions(failed.error(), "load tasks: read 'tasks.items' from MMKV store 'app'"));
-        const auto blocked = await(service, service.addTask("Must not overwrite"));
+        const auto blocked = await(service.addTask("Must not overwrite"));
         require(!blocked && blocked.error().code == business::ErrorCode::notReady);
         require(readFile(root) == "blocked");
         std::filesystem::remove(root);
-        require(await(service, service.reload()).has_value());
-        const auto added = await(service, service.addTask("Existing task"));
+        require(await(service.reload()).has_value());
+        const auto added = await(service.addTask("Existing task"));
         require(added && added->changed);
         saved = *added;
     }
     {
         auto store = std::make_shared<storage::MmkvStore>(root, "app", true);
         business::TaskService service(asyncRuntime.executor(), store);
-        require(await(service, service.reload()).has_value());
+        require(await(service.reload()).has_value());
         const auto id = saved.tasks.at(0).id;
-        const auto addition = await(service, service.addTask("Unsaved"));
-        const auto completion = await(service, service.setTaskCompleted(id, true));
-        const auto removal = await(service, service.removeTask(id));
+        const auto addition = await(service.addTask("Unsaved"));
+        const auto completion = await(service.setTaskCompleted(id, true));
+        const auto removal = await(service.removeTask(id));
         for (const auto *failure : {&addition, &completion, &removal})
             require(!*failure && failure->error().code == business::ErrorCode::storage
                 && mentions(failure->error(), "the store is open read-only"));
         require(mentions(completion.error(), std::format("complete task '{}'", id)));
         // Failed commands keep the committed tasks.
-        const auto reloaded = await(service, service.reload());
+        const auto reloaded = await(service.reload());
         require(reloaded && reloaded->tasks == saved.tasks);
         require(store->getStrings("tasks.items")->value().at(1) == saved.tasks.at(0).title);
     }
     {
         auto store = std::make_shared<storage::MmkvStore>(root);
         business::TaskService service(asyncRuntime.executor(), store);
-        require(await(service, service.reload()).has_value());
-        const auto completed = await(service, service.setTaskCompleted(saved.tasks.at(0).id, true));
+        require(await(service.reload()).has_value());
+        const auto completed = await(service.setTaskCompleted(saved.tasks.at(0).id, true));
         require(completed && completed->tasks.at(0).completed);
     }
 }
@@ -176,16 +183,16 @@ void persistence()
     {
         auto store = std::make_shared<storage::MmkvStore>(root);
         business::TaskService service(asyncRuntime.executor(), store);
-        require(await(service, service.reload()).has_value());
-        require(await(service, service.addTask("学习 QML"))->changed);
-        const auto added = await(service, service.addTask("Test persistence"));
+        require(await(service.reload()).has_value());
+        require(await(service.addTask("学习 QML"))->changed);
+        const auto added = await(service.addTask("Test persistence"));
         require(added.has_value());
-        tasks = await(service, service.setTaskCompleted(added->tasks.back().id, true))->tasks;
+        tasks = await(service.setTaskCompleted(added->tasks.back().id, true))->tasks;
     }
     {
         auto store = std::make_shared<storage::MmkvStore>(root);
         business::TaskService service(asyncRuntime.executor(), store);
-        const auto loaded = await(service, service.reload());
+        const auto loaded = await(service.reload());
         require(loaded && loaded->ready && loaded->tasks == tasks);
     }
     const auto duplicate = business::validateTasks(business::Tasks{{"duplicate", "A"}, {"duplicate", "B"}});
@@ -201,11 +208,11 @@ void sharedStorageKeys()
     require(store->setBool("session.active", true).has_value());
     runtime::AsioRuntime asyncRuntime;
     business::TaskService service(asyncRuntime.executor(), store);
-    require(await(service, service.reload()).has_value());
-    const auto added = await(service, service.addTask("Shared persistence"));
+    require(await(service.reload()).has_value());
+    const auto added = await(service.addTask("Shared persistence"));
     require(added && added->changed);
-    require(await(service, service.reload())->tasks == added->tasks);
-    require(await(service, service.removeTask(added->tasks.front().id))->tasks.empty());
+    require(await(service.reload())->tasks == added->tasks);
+    require(await(service.removeTask(added->tasks.front().id))->tasks.empty());
     require(store->getString("settings.theme")->value() == "dark");
     require(store->getBool("session.active")->value());
     require(store->getStrings("tasks.items")->value().empty());
@@ -226,15 +233,15 @@ void invalidSnapshots()
             auto store = std::make_shared<storage::MmkvStore>(root);
             runtime::AsioRuntime asyncRuntime;
             business::TaskService service(asyncRuntime.executor(), store);
-            const auto loaded = await(service, service.reload());
+            const auto loaded = await(service.reload());
             require(!loaded && mentions(loaded.error(), "load tasks: "));
-            require(!await(service, service.addTask("Keep original data")));
+            require(!await(service.addTask("Keep original data")));
         }
         require(rawSnapshot(root) == content);
     }
 }
-auto queuedWorkflow(vector<asio::awaitable<business::UpdateResult>> operations,
-                    std::thread::id caller, bool &onWorker) -> asio::awaitable<business::UpdateResult>
+auto queuedWorkflow(vector<runtime::Task<business::UpdateResult>> operations,
+                    std::thread::id caller, bool &onWorker) -> runtime::Task<business::UpdateResult>
 {
     onWorker = std::this_thread::get_id() != caller;
     auto result = business::UpdateResult{};
@@ -256,11 +263,11 @@ void workerAndShutdown()
         asio::post(asyncRuntime.executor(), [gate] { gate.wait(); });
         {
             business::TaskService service(asyncRuntime.executor(), store);
-            auto operations = vector<asio::awaitable<business::UpdateResult>>{};
+            auto operations = vector<runtime::Task<business::UpdateResult>>{};
             operations.push_back(service.reload());
             for (auto index = 0; index < 12; ++index)
                 operations.push_back(service.addTask(std::format("Queued {}", index)));
-            pending = asio::co_spawn(service.executor(), queuedWorkflow(std::move(operations), caller, onWorker), asio::use_future);
+            pending = asio::co_spawn(asyncRuntime.executor(), queuedWorkflow(std::move(operations), caller, onWorker), asio::use_future);
         }
         // The service is already gone when the worker can start its operations.
         release.set_value();
@@ -269,8 +276,15 @@ void workerAndShutdown()
     const auto result = pending.get();
     require(onWorker && result && result->tasks.size() == 12 && store->getStrings("tasks.items")->value().size() == 36);
 }
-auto workerThread() -> asio::awaitable<std::thread::id>
+auto workerThread() -> runtime::Task<std::thread::id>
 {
+    co_return std::this_thread::get_id();
+}
+// Awaits the service from whatever executor runs this coroutine and reports where it resumed.
+auto resumedThread(business::TaskService &service) -> runtime::Task<std::thread::id>
+{
+    const auto added = co_await service.addTask("From another executor");
+    require(added.has_value());
     co_return std::this_thread::get_id();
 }
 void sharedRuntime()
@@ -281,29 +295,23 @@ void sharedRuntime()
     auto secondStore = std::make_shared<storage::MmkvStore>(directory.path / "second");
     auto first = std::make_unique<business::TaskService>(asyncRuntime.executor(), firstStore);
     business::TaskService second(asyncRuntime.executor(), secondStore);
-    require(await(*first, first->reload()).has_value() && await(second, second.reload()).has_value());
-    require(await(*first, first->addTask("First service"))->tasks.size() == 1);
+    require(await(first->reload()).has_value() && await(second.reload()).has_value());
+    require(await(first->addTask("First service"))->tasks.size() == 1);
 
-    const auto firstThread = asio::co_spawn(first->executor(), workerThread(), asio::use_future).get();
-    const auto secondThread = asio::co_spawn(second.executor(), workerThread(), asio::use_future).get();
+    // Services run their work on the runtime thread, whoever awaits them.
     const auto runtimeThread = asio::co_spawn(asyncRuntime.executor(), workerThread(), asio::use_future).get();
-    require(firstThread == runtimeThread && secondThread == runtimeThread);
     require(runtimeThread != std::this_thread::get_id());
     first.reset();
-    require(await(second, second.addTask("Second service"))->tasks.size() == 1);
+    require(await(second.addTask("Second service"))->tasks.size() == 1);
     require(firstStore->getStrings("tasks.items")->value().at(1) == "First service");
     require(secondStore->getStrings("tasks.items")->value().at(1) == "Second service");
 
-    // Running on another executor breaks the service contract, so it throws.
-    auto rejected = false;
-    try {
-        static_cast<void>(asio::co_spawn(asyncRuntime.executor(), second.reload(), asio::use_future).get());
-    } catch (const business::Exception &error) {
-        rejected = error.error().code == business::ErrorCode::contractViolation
-            && mentions(error.error(), "TaskService::reload");
-    }
-    require(rejected);
-    require(await(second, second.addTask("Executor still works"))->tasks.size() == 2);
+    // Any coroutine may await a service and resumes on its own executor, here another thread's loop.
+    asio::io_context callerContext;
+    auto resumed = asio::co_spawn(callerContext, resumedThread(second), asio::use_future);
+    jthread caller([&callerContext] { callerContext.run(); });
+    require(resumed.wait_for(5s) == std::future_status::ready && resumed.get() == caller.get_id());
+    require(await(second.reload())->tasks.size() == 2);
     asyncRuntime.finish();
     asyncRuntime.finish();
 }

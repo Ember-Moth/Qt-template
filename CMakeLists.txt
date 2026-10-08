@@ -52,10 +52,12 @@ function(template_scan_modules)
     set_target_properties(${ARGN} PROPERTIES CXX_SCAN_FOR_MODULES ON)
 endfunction()
 
-# Models, storage, services, runtime and the application coroutine: no Qt.
+# Errors, models, storage, network, services, runtime and the application coroutine: no Qt.
 add_library(template_core STATIC)
-template_add_layers(template_core models storage services runtime app/asyncmain)
-target_link_libraries(template_core PUBLIC template_asio PRIVATE template_mmkv)
+template_add_layers(template_core errors models storage network services runtime app/asyncmain)
+target_link_libraries(template_core PUBLIC template_asio PRIVATE template_mmkv template_cofetch glaze::glaze)
+# runtime/task.h: the coroutine vocabulary every layer includes.
+target_include_directories(template_core PUBLIC "${SRC}")
 
 if(TEMPLATE_GUI)
     find_package(Qt6 6.12 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Test)
@@ -118,7 +120,7 @@ endif()
 
 if(TEMPLATE_TESTS)
     enable_testing()
-    foreach(name asyncmain storage business)
+    foreach(name asyncmain storage business network errors)
         add_executable(test_${name} "${TESTS}/test_${name}.cpp")
         target_link_libraries(test_${name} PRIVATE template_core template_mmkv)
         set_target_properties(test_${name} PROPERTIES AUTOMOC OFF)

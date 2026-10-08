@@ -1,6 +1,5 @@
 module;
-#include <asio/any_io_executor.hpp>
-#include <asio/awaitable.hpp>
+#include "runtime/task.h"
 
 export module Template.Tasks;
 import std;
@@ -8,8 +7,10 @@ export import Template.Models;
 import Template.Storage.Mmkv;
 
 using std::string;
-using std::expected;
 using std::shared_ptr;
+using runtime::Task;
+using runtime::Executor;
+using storage::MmkvStore;
 
 export namespace business {
 // The committed tasks after an operation; changed is false when it left them as they were.
@@ -19,23 +20,23 @@ struct Update
     bool ready = false;
     bool changed = false;
 };
-// A failed operation keeps the committed state. Construction failures and calls from another
-// executor throw Exception instead.
-using UpdateResult = expected<Update, Error>;
+// A failed operation keeps the committed state. Construction failures throw Exception instead.
+using UpdateResult = Result<Update>;
 
+// Await the operations from any coroutine: each runs in order on the service's own strand, built
+// from the injected executor, and the caller resumes on its own executor.
 class TaskService
 {
 public:
-    TaskService(asio::any_io_executor executor, shared_ptr<storage::MmkvStore> store);
+    TaskService(Executor executor, shared_ptr<MmkvStore> store);
     ~TaskService();
     TaskService(const TaskService &) = delete;
     TaskService &operator=(const TaskService &) = delete;
 
-    auto executor() const -> asio::any_io_executor;
-    auto reload() -> asio::awaitable<UpdateResult>;
-    auto addTask(string title) -> asio::awaitable<UpdateResult>;
-    auto setTaskCompleted(string id, bool completed) -> asio::awaitable<UpdateResult>;
-    auto removeTask(string id) -> asio::awaitable<UpdateResult>;
+    auto reload() -> Task<UpdateResult>;
+    auto addTask(string title) -> Task<UpdateResult>;
+    auto setTaskCompleted(string id, bool completed) -> Task<UpdateResult>;
+    auto removeTask(string id) -> Task<UpdateResult>;
 
 private:
     struct Impl;

@@ -1,21 +1,21 @@
 export module Template.Models;
 import std;
+export import Template.Errors;
 
 using std::string;
 using std::string_view;
 using std::vector;
 using std::span;
-using std::expected;
 using std::size_t;
 
 export namespace business {
-struct Task
+struct TaskRecord
 {
     static constexpr size_t maxTitleLength = 120;
     string id;
     string title;
     bool completed = false;
-    bool operator==(const Task &) const = default;
+    bool operator==(const TaskRecord &) const = default;
 };
 
 enum class ErrorCode
@@ -27,38 +27,27 @@ enum class ErrorCode
     notReady,
     storage,
     invalidFormat,
+    // A remote request failed in transport or answered with an unexpected HTTP status.
+    network,
+    // A remote request was cancelled, as when the application stops.
+    cancelled,
     // Thrown as Exception: an object cannot be constructed or a caller broke a usage contract.
     missingDependency,
     contractViolation,
 };
 
-// detail reads "<context>: <reason>", outermost context first.
-struct Error
-{
-    ErrorCode code;
-    string detail;
-};
-auto withContext(Error error, string_view context) -> Error;
-
+using Error = errors::Error<ErrorCode>;
+template <class T> using Result = errors::Result<T, ErrorCode>;
 // Thrown only for construction failures and unrecoverable contract violations.
-class Exception : public std::exception
-{
-public:
-    explicit Exception(Error error) : m_error(std::move(error)) {}
-    auto error() const noexcept -> const Error & { return m_error; }
-    auto what() const noexcept -> const char * override { return m_error.detail.c_str(); }
+using Exception = errors::Exception<ErrorCode>;
 
-private:
-    Error m_error;
-};
-
-using Tasks = vector<Task>;
-using TitleResult = expected<string, Error>;
-using TaskResult = expected<Tasks, Error>;
-using SaveResult = expected<void, Error>;
+using Tasks = vector<TaskRecord>;
+using TitleResult = Result<string>;
+using TaskResult = Result<Tasks>;
+using SaveResult = Result<void>;
 
 // Text at the business boundary is UTF-8; limits count UTF-16 code units.
 auto normalizeTitle(string_view title) -> TitleResult;
-SaveResult validateTasks(span<const Task> tasks);
+SaveResult validateTasks(span<const TaskRecord> tasks);
 string createTaskId();
 } // namespace business

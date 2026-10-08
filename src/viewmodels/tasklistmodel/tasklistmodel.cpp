@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <utility>
 
+using std::count_if;
+using std::equal;
+
 TaskListModel::TaskListModel(QObject *parent) : QAbstractListModel(parent) {}
 int TaskListModel::rowCount(const QModelIndex &parent) const
 {
@@ -45,7 +48,7 @@ void TaskListModel::setPending(const QString &id, bool pending)
 }
 int TaskListModel::completedCount() const
 {
-    return static_cast<int>(std::count_if(m_tasks.cbegin(), m_tasks.cend(),
+    return static_cast<int>(count_if(m_tasks.cbegin(), m_tasks.cend(),
         [](const TaskItem &task) { return task.completed; }));
 }
 void TaskListModel::applyTasks(QList<TaskItem> tasks)
@@ -53,7 +56,7 @@ void TaskListModel::applyTasks(QList<TaskItem> tasks)
     if (tasks == m_tasks)
         return;
     if (tasks.size() == m_tasks.size() + 1
-        && std::equal(m_tasks.cbegin(), m_tasks.cend(), tasks.cbegin())) {
+        && equal(m_tasks.cbegin(), m_tasks.cend(), tasks.cbegin())) {
         const auto row = rowCount();
         beginInsertRows({}, row, row);
         m_tasks = std::move(tasks);
@@ -64,7 +67,7 @@ void TaskListModel::applyTasks(QList<TaskItem> tasks)
         qsizetype removed = 0;
         while (removed < tasks.size() && tasks.at(removed) == m_tasks.at(removed))
             ++removed;
-        if (std::equal(tasks.cbegin() + removed, tasks.cend(), m_tasks.cbegin() + removed + 1)) {
+        if (equal(tasks.cbegin() + removed, tasks.cend(), m_tasks.cbegin() + removed + 1)) {
             beginRemoveRows({}, static_cast<int>(removed), static_cast<int>(removed));
             m_tasks = std::move(tasks);
             endRemoveRows();
@@ -72,7 +75,7 @@ void TaskListModel::applyTasks(QList<TaskItem> tasks)
         }
     }
     if (tasks.size() == m_tasks.size()
-        && std::equal(tasks.cbegin(), tasks.cend(), m_tasks.cbegin(),
+        && equal(tasks.cbegin(), tasks.cend(), m_tasks.cbegin(),
                       [](const TaskItem &a, const TaskItem &b) { return a.id == b.id; })) {
         for (int row = 0; row < tasks.size(); ++row) {
             if (tasks.at(row) == m_tasks.at(row))

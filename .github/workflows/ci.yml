@@ -39,12 +39,13 @@ jobs:
         run: python -m pip install "cmake==${{ env.CMAKE_VERSION }}" ninja
       # Clang everywhere, with the C++ library of each platform's Qt SDK.
       # Clang 21 from the Ubuntu archive rejects libstdc++'s std module mixed with headers.
-      - name: Install LLVM and Qt runtime dependencies on Linux
+      # libcurl comes from the system on Linux and macOS; Windows builds it from source.
+      - name: Install LLVM, libcurl and Qt runtime dependencies on Linux
         if: runner.os == 'Linux'
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh "${LLVM_VERSION%%.*}"
-          sudo apt-get install -y "clang-tools-${LLVM_VERSION%%.*}" libgl-dev libegl-dev libxkbcommon-dev libfontconfig1 libdbus-1-3
+          sudo apt-get install -y "clang-tools-${LLVM_VERSION%%.*}" libcurl4-openssl-dev libgl-dev libegl-dev libxkbcommon-dev libfontconfig1 libdbus-1-3
           echo "LLVM_ROOT=/usr/lib/llvm-${LLVM_VERSION%%.*}" >> "$GITHUB_ENV"
       # Linux and macOS use the system package managers; Windows extracts the 600 MB MSI once per version.
       - name: Cache LLVM on Windows
@@ -109,6 +110,3 @@ jobs:
           find install \( -name qt_template -o -name qt_template.exe \) -type f | grep .
           find install \( -name 'Qt6Core*.dll' -o -name QtCore.framework -o -name 'libQt6Core.so*' \) | grep .
           find install -type d -path '*/QtQuick/Controls' | grep .
-      - name: Check clangd modules on macOS
-        if: runner.os == 'macOS'
-        run: cmake --build --preset ${{ matrix.preset }} --target check_clangd

@@ -1,24 +1,31 @@
 module;
+#include "runtime/task.h"
 #include "taskviewmodel.h"
-#include <asio/any_io_executor.hpp>
-#include <asio/awaitable.hpp>
 
 export module Template.ViewModels.Task;
 import std;
 import Template.Tasks;
 export import Template.ViewModels.TaskList;
 
+using std::shared_ptr;
+using std::optional;
+using runtime::Task;
+using runtime::Executor;
+using business::TaskService;
+using business::UpdateResult;
+
 // Match the global-module declaration in the QObject header.
 extern "C++" {
 struct TaskViewModel::Dependencies
 {
-    std::shared_ptr<business::TaskService> service;
+    shared_ptr<TaskService> service;
+    // Where the ViewModel starts service tasks; the service still runs them on its own strand.
+    Executor executor;
 };
 struct TaskViewModel::Initialization
 {
-    asio::any_io_executor executor;
     // Empty when the application stopped or failed before the startup result arrived.
-    asio::awaitable<std::optional<business::UpdateResult>> result;
+    Task<optional<UpdateResult>> result;
 };
 }
 

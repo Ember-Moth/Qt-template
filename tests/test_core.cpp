@@ -32,7 +32,7 @@ struct TaskFixture
     explicit TaskFixture(const QString &directory)
         : service(std::make_shared<business::TaskService>(asyncRuntime.executor(),
               std::make_shared<storage::MmkvStore>(nativePath(directory)))) {}
-    auto dependencies() const -> TaskViewModel::Dependencies { return {service}; }
+    auto dependencies() const -> TaskViewModel::Dependencies { return {service, asyncRuntime.executor()}; }
 };
 // Holds the runtime thread so accepted commands stay in flight until open() or destruction.
 struct RuntimeGate
@@ -67,7 +67,7 @@ void ViewModelTest::serviceIsInjected()
     const auto existing = storage::Strings{"injected", "Provided by the application", "0"};
     QVERIFY(store->setStrings("tasks.items", existing).has_value());
     auto service = std::make_shared<business::TaskService>(asyncRuntime.executor(), store);
-    TaskViewModel viewModel(TaskViewModel::Dependencies{service});
+    TaskViewModel viewModel(TaskViewModel::Dependencies{service, asyncRuntime.executor()});
     service.reset();
     QVERIFY(!viewModel.ready() && !viewModel.busy());
     QVERIFY(viewModel.reload());

@@ -1,5 +1,6 @@
 export module Template.Storage.Mmkv;
 import std;
+export import Template.Errors;
 
 using std::span;
 using std::unique_ptr;
@@ -7,26 +8,22 @@ using std::string;
 using std::string_view;
 using std::vector;
 using std::optional;
-using std::expected;
 using std::int64_t;
 using std::uint64_t;
 using std::byte;
+using std::filesystem::path;
 
 export namespace storage {
 enum class ErrorCode { invalidIdentifier, invalidKey, io, invalidFormat };
-struct Error
-{
-    ErrorCode code;
-    string detail;
-};
-template <class T> using Result = expected<T, Error>;
+using Error = errors::Error<ErrorCode>;
+template <class T> using Result = errors::Result<T, ErrorCode>;
 using Bytes = vector<byte>;
 using Strings = vector<string>;
 
 class MmkvStore
 {
 public:
-    explicit MmkvStore(std::filesystem::path directory, string identifier = "app", bool readOnly = false);
+    explicit MmkvStore(path directory, string identifier = "app", bool readOnly = false);
     ~MmkvStore();
 
     // Missing keys return an empty optional; callers read with the type they wrote.
